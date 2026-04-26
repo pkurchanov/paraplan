@@ -50,7 +50,7 @@ def main():
                         inst_x = 2
                         instructor_maybe = wash(sheet[inst_y][inst_x])
                         if instructor_maybe == "":
-                            workday.append(None)
+                            workday.append((instructor_maybe, "", "", ""))
                             break
                         if instructor_maybe == "выходной день":
                             workday.append((instructor_maybe.upper(), "", "", ""))
