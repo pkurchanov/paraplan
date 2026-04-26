@@ -14,9 +14,9 @@ def kabinyetify(x):
     return wash(int(x)) if type(x) is float else wash(x)
 
 
-def main():
+def parse():
     # Каталог исходников
-    raw_dir = Path(__file__).resolve().parent / "raw"
+    raw_dir = (Path(__file__).resolve().parent if __file__ else Path.cwd()) / "raw"
     # Сформированные недельные расписания
     time_tables = []
     for week_tag in raw_dir.iterdir():
@@ -77,4 +77,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parse()
