@@ -1,10 +1,6 @@
 from python_calamine import CalamineWorkbook, SheetVisibleEnum
 from pathlib import Path
 
-# На подумать:
-# - что со ссылками
-# - возможно, кэширование
-
 
 def wash(string):
     """Помыть строку перед использованием"""
@@ -55,10 +51,10 @@ def parse():
                         inst_x = 2
                         instructor_maybe = wash(sheet[inst_y][inst_x])
                         if instructor_maybe == "":
-                            workday.append((instructor_maybe, "", "", ""))
+                            workday.append((instructor_maybe))
                             continue
                         if instructor_maybe == "выходной день":
-                            workday = [(instructor_maybe.upper(), "", "", "")]
+                            workday = [(instructor_maybe.upper())]
                             break
                         # Название предмета (включая пометы в скобках)
                         subject: str = sheet[inst_y - 1][inst_x]  # ty:ignore[invalid-assignment]
@@ -75,6 +71,9 @@ def parse():
                         workday.append(
                             (instructor_maybe.title(), subject, form, classroom)
                         )
+
+                        # TODO: handle links
+
                     workweek.append(workday)
                 time_tables.append((date, year, code.upper(), workweek))
     return time_tables
