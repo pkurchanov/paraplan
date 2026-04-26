@@ -16,7 +16,10 @@ def kabinyetify(x):
 
 def parse():
     # Каталог исходников
-    raw_dir = (Path(__file__).resolve().parent if __file__ else Path.cwd()) / "raw"
+    try:
+        raw_dir = Path(__file__).resolve().parent / "raw"
+    except NameError:
+        raw_dir = Path.cwd() / "raw"
     # Сформированные недельные расписания
     time_tables = []
     for week_tag in raw_dir.iterdir():
@@ -72,7 +75,6 @@ def parse():
                         )
                     workweek.append(workday)
                 time_tables.append((date, year, code.upper(), workweek))
-    print(*time_tables, sep="\n\n")
     return time_tables
 
 
