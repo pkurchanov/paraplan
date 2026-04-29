@@ -77,7 +77,7 @@ def parse_all(raw_dir):
     return time_tables
 
 
-def main():
+def main() -> list[tuple] | None:
     try:
         raw_dir = Path(__file__).resolve().parent / "raw"
     except NameError:

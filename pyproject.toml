@@ -1,7 +1,5 @@
 [project]
-name = "raspinform"
+name = "paraplan"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = [
-    "python-calamine>=0.6.2",
-]
+dependencies = ["maxapi>=1.0.0", "python-calamine>=0.6.2"]
