@@ -1,5 +1,5 @@
-from datetime import datetime
 from python_calamine import CalamineWorkbook, SheetVisibleEnum, ZipError
+from datetime import datetime
 from pathlib import Path
 
 
@@ -16,8 +16,10 @@ def kabinyetify(x):
 def parse_all(raw_dir):
     """Принимает путь к директории с таблицами, парсит и упаковывает в общий массив все листы"""
     time_tables = []
-    for book_file in raw_dir.iterdir():
-        book = CalamineWorkbook.from_path(book_file)
+    for file in raw_dir.iterdir():
+        if file.suffix != ".xlsx":
+            continue
+        book = CalamineWorkbook.from_path(file)
         sheet_names = [
             sheetmd.name
             for sheetmd in book.sheets_metadata
@@ -67,7 +69,6 @@ def parse_all(raw_dir):
                             link = linkspot
                     except IndexError:
                         pass
-
                     workday.append(
                         (instructor_maybe.title(), subject, form, classroom, link)
                     )
