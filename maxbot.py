@@ -4,21 +4,32 @@ from keys import TEST_TOKEN
 from maxapi import Bot, Dispatcher
 
 # TODO:
-# - Принять теги для фильтрации
-# - Отфильтровать
-# - Красиво подать (как встроенное веб приложение)
+# - Написать и где-то поместить мини-приложение
+# - Скармливать ему: роль (студент/преподаватель), группу (если студент), фамилию (если преподаватель)
+# - Фильтровать расписание по соответствующему критерию
+# - Получать обратно красивую страничку с расписанием
 
 bot = Bot(TEST_TOKEN)
 dp = Dispatcher()
 
+_schedule_cache = None
+
+
+def load_schedule():
+    """Загружает и кэширует расписание"""
+    global _schedule_cache
+    if not _schedule_cache:
+        _schedule_cache = parse()
+    return _schedule_cache
+
 
 async def main():
     try:
-        tables = parse()
+        load_schedule()
+        print("✅ Расписание загружено")
     except Exception as e:
-        print(f"Произошла ошибка при обработке таблиц: {e}")
+        print(f"⚠️ Ошибка загрузки расписания: {e}")
         return e
-    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
