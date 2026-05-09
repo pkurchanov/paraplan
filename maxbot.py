@@ -57,15 +57,15 @@ async def search_handler(event: MessageCreated):
 
 @dp.message_callback()
 async def button_handler(event: MessageCallback):
-    term_clicked = event.callback.payload
+    filter_chosen = event.callback.payload
     # TODO: отфильтровать и вывести само расписание
-    if term_clicked in codes:
+    if filter_chosen in codes:
         await event.message.edit(  # ty:ignore[unresolved-attribute]
-            text=f"Расписание группы {term_clicked}", attachments=[]
+            text=f"Расписание группы {filter_chosen}", attachments=[]
         )
     else:
         await event.message.edit(  # ty:ignore[unresolved-attribute]
-            text=f"Расписание преподавателя {term_clicked}", attachments=[]
+            text=f"Расписание преподавателя {filter_chosen}", attachments=[]
         )
 
 

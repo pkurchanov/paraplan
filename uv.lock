@@ -325,6 +325,21 @@ wheels = [
 ]
 
 [[package]]
+name = "paraplan"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "maxapi" },
+    { name = "python-calamine" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "maxapi", specifier = ">=1.0.0" },
+    { name = "python-calamine", specifier = ">=0.6.2" },
+]
+
+[[package]]
 name = "propcache"
 version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -533,21 +548,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/3e/40/c421fe66af1e94267a66735940dfc01f7e423eb8c0217a9bc97b03927de6/python_calamine-0.6.2-cp314-cp314t-musllinux_1_1_x86_64.whl", hash = "sha256:7568800d967b7b7b56d1a139d8d6c343b70d88695c8f3c3906aaa1b8bff76900", size = 1144251, upload-time = "2026-02-18T13:38:01.881Z" },
     { url = "https://files.pythonhosted.org/packages/16/ed/def5e5fa257658894ca2ca3f9c532064056cd1b686f3bc2861f6313ccac7/python_calamine-0.6.2-cp314-cp314t-win_amd64.whl", hash = "sha256:aab8ef96f19feb5df3704dc04805b1e0d6e82827546bea92d660344c674ed9e1", size = 748446, upload-time = "2026-02-18T13:38:03.35Z" },
     { url = "https://files.pythonhosted.org/packages/f6/24/3587fb169ddd82e78fcd4cd7b2e3eb3ecaa9b28dbee1da18dd0db13b27e6/python_calamine-0.6.2-cp314-cp314t-win_arm64.whl", hash = "sha256:514b3b0ccba57cf807bd4869a76020eb53e2d797f35c95fceb274a5208da1651", size = 714386, upload-time = "2026-02-18T13:38:04.643Z" },
-]
-
-[[package]]
-name = "raspinform"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "maxapi" },
-    { name = "python-calamine" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "maxapi", specifier = ">=1.0.0" },
-    { name = "python-calamine", specifier = ">=0.6.2" },
 ]
 
 [[package]]
