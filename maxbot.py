@@ -1,9 +1,11 @@
 import asyncio
 import logging
 
+from datetime import datetime
 from parser import main as load_schedule, normalize
 from keys import TEST_TOKEN
 from maxapi import Bot, Dispatcher
+from maxapi.enums import Format
 from maxapi.types import MessageCreated, Command
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.types.attachments.buttons import CallbackButton
@@ -11,17 +13,27 @@ from maxapi.types.attachments.buttons import CallbackButton
 logging.basicConfig(level=logging.INFO)
 bot = Bot(TEST_TOKEN)
 dp = Dispatcher()
-MAX_SEARCH_RESULTS_SHOWN = 5
-SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload="back")
 
-schedule = None
+SEARCH_RESULTS_SHOWN = 5
+SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload="back")
+DAYS_OF_WEEK = (
+    "# ☕️ Понедельник\n",
+    "# 📈 Вторник\n",
+    "# 🐪 Среда\n",
+    "# ⏳ Четверг\n",
+    "# 🔥 Пятница\n",
+    "# 😴 Суббота\n",
+)
+NUMBERS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣")
+
+schedule = []
 codes = set()
 names = set()
 listening: bool = False
 
 
 def load_tables():
-    """Загружает таблицы и обновляет поисковые метки, если еще не закэшированы"""
+    """Загружает таблицы и обновляет поисковые метки"""
     global schedule
     if not schedule:
         schedule = load_schedule()
@@ -36,21 +48,9 @@ def load_tables():
         )
 
 
-def filter_by_code():
-    raise NotImplementedError
-
-
-def filter_by_name():
-    raise NotImplementedError
-
-
-def message_sender(event):
-    return event.message.answer if type(event) is MessageCreated else event.message.edit
-
-
 async def try_load_tables(event):
     """Более осторожный младший брат load_tables"""
-    send_message = message_sender(event)
+    send_message = pick_message_sender(event)
     try:
         load_tables()
     except Exception as e:
@@ -60,9 +60,73 @@ async def try_load_tables(event):
         )
 
 
+def filter_by_code(code):
+    global schedule
+    return [table for table in schedule if table[2] == code]
+
+
+def filter_by_name(name):
+    global schedule
+    raise NotImplementedError
+
+
+def pick_current_table(tables):
+    """Выбирает позднейшую из недель, начавшихся до сегодняшнего дня"""
+    curr_data = datetime.now().date()
+    return max((t for t in tables if t[0] < curr_data), key=lambda x: x[0])
+
+
+def prettyprint(workweek):
+    to_display = ""
+    for day_idx, day in enumerate(workweek):
+        to_display += DAYS_OF_WEEK[day_idx]
+        for class_idx, c in enumerate(day):
+            if c[0] == "":
+                continue
+            elif c[0] == "ВЫХОДНОЙ ДЕНЬ":
+                to_display += "> Выходной день 🎉\n"
+                break
+            else:
+                instr_or_group_name = c[0]
+                class_name = c[1]
+                class_room = c[3]
+                # Чистый текст если нет ссылки, иначе кликабельный
+                class_form = c[2] if not c[4] else f"[{c[2]}]({c[4]})"
+
+                to_display += f"> {NUMBERS[class_idx]} {class_name}\n"
+                to_display += f"👤 *{instr_or_group_name}*\n"
+                to_display += f"🚪 *{class_form}, {class_room}*\n\n"
+    return to_display
+
+
+async def serve(event, filter_by, filter):
+    navigation = (
+        InlineKeyboardBuilder()
+        .row(
+            CallbackButton(text="⬅️ Пред. неделя", payload="prev"),
+            CallbackButton(text="След. неделя ➡️", payload="next"),
+        )
+        .row(SEARCH_BUTTON)
+    )
+    send_message = pick_message_sender(event)
+    filtered_tables = filter_by(filter)
+    current_table = pick_current_table(filtered_tables)
+    header = f"🗓️ Расписание на **{current_table[0]}** для {'преподавателя' if filter_by is filter_by_name else 'группы'} {filter}:\n"
+    content = prettyprint(current_table[3])
+    await send_message(
+        text=header + content,
+        attachments=[navigation.as_markup()],
+        format=Format.MARKDOWN,
+    )
+
+
+def pick_message_sender(event):
+    return event.message.answer if type(event) is MessageCreated else event.message.edit
+
+
 @dp.message_created(Command("rasp"))
 async def menu_handler(event):
-    send_message = message_sender(event)
+    send_message = pick_message_sender(event)
     global listening
     await try_load_tables(event)
     await send_message(
@@ -74,7 +138,7 @@ async def menu_handler(event):
 
 @dp.message_created()
 async def search_handler(event):
-    send_message = message_sender(event)
+    send_message = pick_message_sender(event)
     global listening
     if listening:
         try:
@@ -87,7 +151,7 @@ async def search_handler(event):
                         CallbackButton(text=searchable, payload=searchable)
                     )
                     search_results_shown += 1
-                    if search_results_shown == MAX_SEARCH_RESULTS_SHOWN:
+                    if search_results_shown == SEARCH_RESULTS_SHOWN:
                         break
             if search_results_shown == 0:
                 raise Exception("Ничего не найдено :(")
@@ -105,37 +169,22 @@ async def search_handler(event):
 
 @dp.message_callback()
 async def button_handler(event):
-    send_message = message_sender(event)
     # Всегда свежие данные
     await try_load_tables(event)
 
-    filter_chosen = event.callback.payload
-    navigation = (
-        InlineKeyboardBuilder()
-        .row(
-            CallbackButton(text="⬅️ Пред. неделя", payload="prev"),
-            CallbackButton(text="След. неделя ➡️", payload="next"),
-        )
-        .row(SEARCH_BUTTON)
-    )
-    if filter_chosen in codes:
-        await send_message(
-            text=f"Расписание для группы {filter_chosen}",
-            attachments=[navigation.as_markup()],
-        )
-    elif filter_chosen in names:
-        await send_message(
-            text=f"Расписание для преподавателя {filter_chosen}",
-            attachments=[navigation.as_markup()],
-        )
-    elif filter_chosen == "next":
+    button_pressed = event.callback.payload
+    if button_pressed in codes:
+        await serve(event, filter_by_code, button_pressed)
+    elif button_pressed in names:
+        await serve(event, filter_by_name, button_pressed)
+    elif button_pressed == "next":
         raise NotImplementedError
-    elif filter_chosen == "prev":
+    elif button_pressed == "prev":
         raise NotImplementedError
-    elif filter_chosen == "back":
+    elif button_pressed == "back":
         await menu_handler(event)
     else:
-        logging.log(level=logging.ERROR, msg=f"Нераспознанный ключ: {filter_chosen}")
+        logging.log(level=logging.ERROR, msg=f"Нераспознанный ключ: {button_pressed}")
 
 
 async def main():
