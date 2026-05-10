@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # Raw material
-raw/
+src/
 
 # API tokens
 keys.py
