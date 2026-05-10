@@ -1,20 +1,26 @@
+import logging
 from python_calamine import CalamineWorkbook, SheetVisibleEnum, ZipError
 from datetime import datetime
 from pathlib import Path
 
 
-def wash(string):
-    """Моет строку перед использованием"""
-    return str(string).lower().strip()
+# Между днями по 12 строк, между занятиями по 2
+DAY_OFFSET = 13
+CLASS_OFFSET = 3
+# Координаты первого (потенциального) преподавателя на листе
+INST_Y_BASELINE = 9
+INST_X_BASELINE = 2
 
 
-def kabinyetify(x):
-    """Устраняет кабинеты в духе 302.0"""
-    return wash(int(x)) if type(x) is float else wash(x)
+def normalize(x) -> str:
+    """Чистит текстовые данные перед использованием"""
+    if type(x) is float:
+        x = int(x)
+    return str(x).lower().strip()
 
 
 def parse_all(raw_dir):
-    """Принимает путь к директории с таблицами, парсит и упаковывает в общий массив все листы"""
+    """Принимает путь к директории с таблицами, упаковывает в общий вложенный массив данные всех листов"""
     time_tables = []
     for file in raw_dir.iterdir():
         if file.suffix != ".xlsx":
@@ -29,21 +35,20 @@ def parse_all(raw_dir):
 
         for sheet in sheets:
             # Начало недели
-            date = datetime.strptime(wash(sheet[3][3])[:10], "%d.%m.%Y").date()
+            date = datetime.strptime(normalize(sheet[3][3])[:10], "%d.%m.%Y").date()
             # Курс
-            year = wash(sheet[4][2])
+            year = normalize(sheet[4][2])
             # Код группы
-            code = wash(sheet[6][2])
+            code = normalize(sheet[6][2])
             # Сама рабочая неделя
             workweek = []
             for i in range(6):
                 # Полный рабочий день
                 workday = []
                 for j in range(4):
-                    # Между днями по 12 строк, между занятиями по 2
-                    inst_y = 9 + i * 13 + j * 3
-                    inst_x = 2
-                    instructor_maybe = wash(sheet[inst_y][inst_x])
+                    inst_y = INST_Y_BASELINE + i * DAY_OFFSET + j * CLASS_OFFSET
+                    inst_x = INST_X_BASELINE
+                    instructor_maybe = normalize(sheet[inst_y][inst_x])
                     if instructor_maybe == "":
                         workday.append((instructor_maybe,))
                         continue
@@ -53,14 +58,14 @@ def parse_all(raw_dir):
                     # Название предмета (включая пометы в скобках)
                     subject: str = sheet[inst_y - 1][inst_x]  # ty:ignore[invalid-assignment]
                     # Форма проведения занятия
-                    form = wash(sheet[inst_y + 1][inst_x])
+                    form = normalize(sheet[inst_y + 1][inst_x])
                     # Кабинет
                     if form == "асинхронно":
-                        corner_num = kabinyetify(sheet[inst_y + 1][inst_x + 2])
+                        corner_num = normalize(sheet[inst_y + 1][inst_x + 2])
                         if corner_num:
                             classroom = corner_num
                     else:
-                        classroom = kabinyetify(sheet[inst_y][inst_x + 2])
+                        classroom = normalize(sheet[inst_y][inst_x + 2])
                     # Ссылка, если есть
                     link = ""
                     try:
@@ -77,7 +82,7 @@ def parse_all(raw_dir):
     return time_tables
 
 
-def main() -> list[tuple] | None:
+def main() -> list[tuple] | int:
     try:
         raw_dir = Path(__file__).resolve().parent / "raw"
     except NameError:
@@ -85,7 +90,11 @@ def main() -> list[tuple] | None:
     try:
         return parse_all(raw_dir)
     except ZipError:
-        print("ОШИБКА: сохраните и закройте все таблицы перед началом работы!")
+        logging.log(
+            logging.ERROR,
+            "Сохраните и закройте все таблицы перед началом работы!",
+        )
+        return 1
 
 
 if __name__ == "__main__":
