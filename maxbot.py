@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from typing import Callable
+from typing import Callable, TypedDict
 from datetime import datetime
 from parser import main as load_schedule, normalize, Table, Workweek
 from keys import TEST_TOKEN
@@ -11,9 +11,19 @@ from maxapi.types import MessageCreated, Command, MessageCallback
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.types.attachments.buttons import CallbackButton
 
-logging.basicConfig(level=logging.INFO)
 bot = Bot(TEST_TOKEN)
 dp = Dispatcher()
+logging.basicConfig(level=logging.INFO)
+
+FilterFunc = Callable[[str], list[Table]]
+
+
+class Context(TypedDict):
+    filter_by: FilterFunc
+    search_term: str
+    tables: list[Table]
+    index: int
+
 
 SEARCH_RESULTS_SHOWN = 10
 SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload="back")
@@ -27,10 +37,11 @@ DAYS_OF_WEEK = (
 )
 NUMBERS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣")
 
+
 schedule: list[Table] = []
 codes: set[str] = set()
 names: set[str] = set()
-user_context: dict[int, dict[str, object]] = {}
+user_context: dict[int, Context] = {}
 listening: bool = False
 
 
@@ -114,7 +125,7 @@ def pick_current_table(tables: list[Table]) -> Table:
     return max((t for t in tables if t[0] < curr_date), key=lambda x: x[0])
 
 
-def make_header(table: Table, filter_by: Callable, search_term: str) -> str:
+def make_header(table: Table, filter_by: FilterFunc, search_term: str) -> str:
     """Формирует заголовок расписания"""
     entity_type = "преподавателя" if filter_by is filter_by_name else "группы"
     return f"🗓️ Расписание на **{table[0]}** для {entity_type} {search_term}:\n"
@@ -162,7 +173,7 @@ def make_navigation() -> InlineKeyboardBuilder:
     )
 
 
-async def serve(event: MessageCallback, filter_by: Callable, search_term: str):
+async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str):
     """Оркестрирует формирование сообщения и обновление контекста"""
     send_message = pick_message_sender(event)
 
@@ -188,6 +199,45 @@ async def serve(event: MessageCallback, filter_by: Callable, search_term: str):
     await send_message(
         text=header + content,
         attachments=[navigation.as_markup()],
+        format=Format.MARKDOWN,
+    )
+
+
+async def handle_navigation(event: MessageCallback, user_id: int, direction: str):
+    """Обрабатывает переключение недель"""
+    send_message = pick_message_sender(event)
+    context = user_context.get(user_id)
+    if not context:
+        await send_message(
+            text="⚠️ Сессия истекла. Начните поиск заново.",
+            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+        )
+        return
+    tables: list[Table] = context["tables"]
+    current_idx: int = context["index"]
+    if direction == "next":
+        new_idx = current_idx - 1
+    else:
+        new_idx = current_idx + 1
+    if new_idx < 0 or new_idx >= len(tables):
+        boundary_msg = (
+            "Это последняя доступная неделя 📚"
+            if direction == "next"
+            else "📚 Это самая ранняя запись в архиве"
+        )
+        await send_message(
+            text=boundary_msg,
+            attachments=[make_navigation().as_markup()],
+            format=Format.MARKDOWN,
+        )
+        return
+    context["index"] = new_idx
+    selected_table = tables[new_idx]
+    header = make_header(selected_table, context["filter_by"], context["search_term"])
+    content = make_content(selected_table[3])
+    await send_message(
+        text=header + content,
+        attachments=[make_navigation().as_markup()],
         format=Format.MARKDOWN,
     )
 
@@ -247,14 +297,14 @@ async def button_handler(event: MessageCallback):
     """Занимается обработкой нажатий"""
     await try_load_tables(event)
     button_pressed = event.callback.payload
+    user_id = event.callback.user.user_id
+
     if button_pressed in codes:
         await serve(event, filter_by_code, button_pressed)
     elif button_pressed in names:
         await serve(event, filter_by_name, button_pressed)
-    elif button_pressed == "next":
-        raise NotImplementedError
-    elif button_pressed == "prev":
-        raise NotImplementedError
+    elif button_pressed in ("next", "prev"):
+        await handle_navigation(event, user_id, button_pressed)
     elif button_pressed == "back":
         await menu_handler(event)
     else:
