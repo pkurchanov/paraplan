@@ -44,13 +44,19 @@ names: set[str] = set()
 user_context: dict[int, Context] = {}
 listening: bool = False
 
+# Потенциальные улучшения:
+# - Мемоизировать уже отфильтрованные таблицы
+# - Преднормализовать поисковые метки
+# - Ввести TTL для кэшей
 
-def load_tables():
+
+async def load_tables(force: bool = False):
     """Загружает таблицы и обновляет поисковые метки"""
-    global schedule
-    if not schedule:
+    global schedule, codes, names
+    if force or not schedule:
         schedule = load_schedule()
-    if not codes or not names:
+        codes.clear()
+        names.clear()
         codes.update(t[2] for t in schedule)
         names.update(
             name
@@ -61,11 +67,11 @@ def load_tables():
         )
 
 
-async def try_load_tables(event: MessageCreated | MessageCallback):
+async def try_load_tables(event: MessageCreated | MessageCallback, force: bool = False):
     """Более осторожный младший брат load_tables"""
     send_message = pick_message_sender(event)
     try:
-        load_tables()
+        await load_tables(force)
     except Exception as e:
         await send_message(
             text=f"⚠️ Возникла проблема при загрузке таблиц:\n{e}",
@@ -74,13 +80,13 @@ async def try_load_tables(event: MessageCreated | MessageCallback):
 
 
 def filter_by_code(code: str) -> list[Table]:
-    """Фильтрует расписание по коду группы"""
+    """Отфильтровывает расписание по коду группы"""
     global schedule
     return [table for table in schedule if table[2] == code]
 
 
 def filter_by_name(name: str) -> list[Table]:
-    """Фильтрует и консолидирует расписание по имени преподавателя"""
+    """Пересобирает расписание по имени преподавателя"""
     global schedule
     date_map = {}
     for date, _, code, days in schedule:
@@ -163,6 +169,7 @@ def make_content(workweek: Workweek) -> str:
 
 
 def make_navigation() -> InlineKeyboardBuilder:
+    """Формирует клавиатуру для навигации"""
     return (
         InlineKeyboardBuilder()
         .row(
@@ -176,22 +183,19 @@ def make_navigation() -> InlineKeyboardBuilder:
 async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str):
     """Оркестрирует формирование сообщения и обновление контекста"""
     send_message = pick_message_sender(event)
-
     filtered_tables = filter_by(search_term)
     sorted_tables = get_sorted_tables(filtered_tables)
     curr_table = pick_current_table(filtered_tables)
     try:
-        current_idx = next(
-            i for i, t in enumerate(sorted_tables) if t[0] == curr_table[0]
-        )
+        curr_idx = next(i for i, t in enumerate(sorted_tables) if t[0] == curr_table[0])
     except StopIteration:
-        current_idx = 0
+        curr_idx = 0
     user_id = event.callback.user.user_id
     user_context[user_id] = {
         "filter_by": filter_by,
         "search_term": search_term,
         "tables": sorted_tables,
-        "index": current_idx,
+        "index": curr_idx,
     }
     navigation = make_navigation()
     header = make_header(curr_table, filter_by, search_term)
@@ -213,12 +217,12 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
             attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
         )
         return
-    tables: list[Table] = context["tables"]
-    current_idx: int = context["index"]
+    tables = context["tables"]
+    curr_idx = context["index"]
     if direction == "next":
-        new_idx = current_idx - 1
+        new_idx = curr_idx - 1
     else:
-        new_idx = current_idx + 1
+        new_idx = curr_idx + 1
     if new_idx < 0 or new_idx >= len(tables):
         boundary_msg = (
             "Это последняя доступная неделя 📚"
@@ -243,13 +247,12 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
 
 
 def pick_message_sender(event: MessageCreated | MessageCallback) -> Callable:
-    """Решает между редактированием (по кнопке) и отправкой нового сообщения (по команде)"""
+    """Решает между редактированием и отправкой нового сообщения смотря откуда вызван"""
     return event.message.answer if type(event) is MessageCreated else event.message.edit  # ty:ignore[unresolved-attribute]
 
 
-@dp.message_created(Command("rasp"))
-async def menu_handler(event: MessageCreated | MessageCallback):
-    """Призывает поисковую строку"""
+@dp.message_created(Command("search"))
+async def searchbar_summoner(event: MessageCreated | MessageCallback):
     send_message = pick_message_sender(event)
     global listening
     await try_load_tables(event)
@@ -262,7 +265,7 @@ async def menu_handler(event: MessageCreated | MessageCallback):
 
 @dp.message_created()
 async def search_handler(event: MessageCreated):
-    """Обрабатывает поисковые запросы"""
+    send_message = pick_message_sender(event)
     global listening
     if listening:
         try:
@@ -270,11 +273,9 @@ async def search_handler(event: MessageCreated):
                 query = normalize(event.message.body.text)
             search_results = InlineKeyboardBuilder()
             search_results_shown = 0
-            for searchable in codes | names:
-                if query in normalize(searchable):
-                    search_results.row(
-                        CallbackButton(text=searchable, payload=searchable)
-                    )
+            for term in codes | names:
+                if query in normalize(term):
+                    search_results.row(CallbackButton(text=term, payload=term))
                     search_results_shown += 1
                     if search_results_shown == SEARCH_RESULTS_SHOWN:
                         break
@@ -282,23 +283,31 @@ async def search_handler(event: MessageCreated):
                 raise Exception("Ничего не найдено :(")
             else:
                 search_results.row(SEARCH_BUTTON)
-                await event.message.answer(
+                await send_message(
                     text="Найдено:",
                     attachments=[search_results.as_markup()],
                 )
         except Exception as e:
-            await event.message.answer(text=f"{e}\n\nПопробуйте еще раз")
+            await send_message(text=f"{e}\n\nПопробуйте еще раз")
         else:
             listening = False
 
 
+@dp.message_created(Command("refresh"))
+async def refresh_handler(event: MessageCreated):
+    send_message = pick_message_sender(event)
+    try:
+        await try_load_tables(event, force=True)
+        await send_message(text="✅ Расписание обновлено")
+    except Exception as e:
+        await send_message(text=f"⚠️ Ошибка обновления: {e}")
+
+
 @dp.message_callback()
 async def button_handler(event: MessageCallback):
-    """Занимается обработкой нажатий"""
     await try_load_tables(event)
     button_pressed = event.callback.payload
     user_id = event.callback.user.user_id
-
     if button_pressed in codes:
         await serve(event, filter_by_code, button_pressed)
     elif button_pressed in names:
@@ -306,7 +315,7 @@ async def button_handler(event: MessageCallback):
     elif button_pressed in ("next", "prev"):
         await handle_navigation(event, user_id, button_pressed)
     elif button_pressed == "back":
-        await menu_handler(event)
+        await searchbar_summoner(event)
     else:
         logging.log(level=logging.ERROR, msg=f"Нераспознанный ключ: {button_pressed}")
 
