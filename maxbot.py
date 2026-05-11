@@ -1,12 +1,13 @@
 import asyncio
 import logging
 
+from typing import Callable
 from datetime import datetime
-from parser import main as load_schedule, normalize
+from parser import main as load_schedule, normalize, Table, Workweek
 from keys import TEST_TOKEN
 from maxapi import Bot, Dispatcher
 from maxapi.enums import Format
-from maxapi.types import MessageCreated, Command
+from maxapi.types import MessageCreated, Command, MessageCallback
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 from maxapi.types.attachments.buttons import CallbackButton
 
@@ -14,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(TEST_TOKEN)
 dp = Dispatcher()
 
-SEARCH_RESULTS_SHOWN = 5
+SEARCH_RESULTS_SHOWN = 10
 SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload="back")
 DAYS_OF_WEEK = (
     "# ☕️ Понедельник\n",
@@ -26,9 +27,10 @@ DAYS_OF_WEEK = (
 )
 NUMBERS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣")
 
-schedule = []
-codes = set()
-names = set()
+schedule: list[Table] = []
+codes: set[str] = set()
+names: set[str] = set()
+user_context: dict[int, dict[str, object]] = {}
 listening: bool = False
 
 
@@ -48,7 +50,7 @@ def load_tables():
         )
 
 
-async def try_load_tables(event):
+async def try_load_tables(event: MessageCreated | MessageCallback):
     """Более осторожный младший брат load_tables"""
     send_message = pick_message_sender(event)
     try:
@@ -60,25 +62,75 @@ async def try_load_tables(event):
         )
 
 
-def filter_by_code(code):
+def filter_by_code(code: str) -> list[Table]:
+    """Фильтрует расписание по коду группы"""
     global schedule
     return [table for table in schedule if table[2] == code]
 
 
-def filter_by_name(name):
+def filter_by_name(name: str) -> list[Table]:
+    """Фильтрует и консолидирует расписание по имени преподавателя"""
     global schedule
-    raise NotImplementedError
+    date_map = {}
+    for date, _, code, days in schedule:
+        if date not in date_map:
+            date_map[date] = [[] for _ in days]
+        for day_idx, day in enumerate(days):
+            for slot, c in enumerate(day):
+                if len(c) == 5 and c[0] == name:
+                    date_map[date][day_idx].append((slot, code, c[1], c[2], c[3], c[4]))
+    result = []
+    for date in date_map:
+        new_days = []
+        for day_slots in date_map[date]:
+            if not day_slots:
+                new_days.append([("",)])
+                continue
+            by_slot = {}
+            for slot, code, cname, form, room, link in day_slots:
+                by_slot.setdefault(slot, []).append((code, cname, form, room, link))
+            filtered_day = []
+            for slot in sorted(by_slot.keys()):
+                entries = by_slot[slot]
+                if len(entries) == 1:
+                    filtered_day.append(entries[0])
+                else:
+                    codes = ", ".join(dict.fromkeys(e[0] for e in entries))
+                    _, cname, form, room, link = entries[0]
+                    filtered_day.append((codes, cname, form, room, link))
+            new_days.append(filtered_day if filtered_day else [("",)])
+        result.append((date, "", name, new_days))
+    return result
 
 
-def pick_current_table(tables):
+def get_sorted_tables(filtered_tables: list[Table]) -> list[Table]:
+    """Возвращает таблицы, отсортированные по дате (от новых к старым)"""
+    return sorted(filtered_tables, key=lambda x: x[0], reverse=True)
+
+
+def pick_current_table(tables: list[Table]) -> Table:
     """Выбирает позднейшую из недель, начавшихся до сегодняшнего дня"""
-    curr_data = datetime.now().date()
-    return max((t for t in tables if t[0] < curr_data), key=lambda x: x[0])
+    curr_date = datetime.now().date()
+    return max((t for t in tables if t[0] < curr_date), key=lambda x: x[0])
 
 
-def prettyprint(workweek):
+def make_header(table: Table, filter_by: Callable, search_term: str) -> str:
+    """Формирует заголовок расписания"""
+    entity_type = "преподавателя" if filter_by is filter_by_name else "группы"
+    return f"🗓️ Расписание на **{table[0]}** для {entity_type} {search_term}:\n"
+
+
+def make_content(workweek: Workweek) -> str:
+    """Формирует текст расписания"""
     to_display = ""
     for day_idx, day in enumerate(workweek):
+        has_content = False
+        for c in day:
+            if c[0]:
+                has_content = True
+                break
+        if not has_content:
+            continue
         to_display += DAYS_OF_WEEK[day_idx]
         for class_idx, c in enumerate(day):
             if c[0] == "":
@@ -90,17 +142,17 @@ def prettyprint(workweek):
                 instr_or_group_name = c[0]
                 class_name = c[1]
                 class_room = c[3]
-                # Чистый текст если нет ссылки, иначе кликабельный
                 class_form = c[2] if not c[4] else f"[{c[2]}]({c[4]})"
-
                 to_display += f"> {NUMBERS[class_idx]} {class_name}\n"
                 to_display += f"👤 *{instr_or_group_name}*\n"
                 to_display += f"🚪 *{class_form}, {class_room}*\n\n"
+    if not to_display.strip():
+        return "> Нет занятий на эту неделю ✨\n"
     return to_display
 
 
-async def serve(event, filter_by, filter):
-    navigation = (
+def make_navigation() -> InlineKeyboardBuilder:
+    return (
         InlineKeyboardBuilder()
         .row(
             CallbackButton(text="⬅️ Пред. неделя", payload="prev"),
@@ -108,11 +160,31 @@ async def serve(event, filter_by, filter):
         )
         .row(SEARCH_BUTTON)
     )
+
+
+async def serve(event: MessageCallback, filter_by: Callable, search_term: str):
+    """Оркестрирует формирование сообщения и обновление контекста"""
     send_message = pick_message_sender(event)
-    filtered_tables = filter_by(filter)
-    current_table = pick_current_table(filtered_tables)
-    header = f"🗓️ Расписание на **{current_table[0]}** для {'преподавателя' if filter_by is filter_by_name else 'группы'} {filter}:\n"
-    content = prettyprint(current_table[3])
+
+    filtered_tables = filter_by(search_term)
+    sorted_tables = get_sorted_tables(filtered_tables)
+    curr_table = pick_current_table(filtered_tables)
+    try:
+        current_idx = next(
+            i for i, t in enumerate(sorted_tables) if t[0] == curr_table[0]
+        )
+    except StopIteration:
+        current_idx = 0
+    user_id = event.callback.user.user_id
+    user_context[user_id] = {
+        "filter_by": filter_by,
+        "search_term": search_term,
+        "tables": sorted_tables,
+        "index": current_idx,
+    }
+    navigation = make_navigation()
+    header = make_header(curr_table, filter_by, search_term)
+    content = make_content(curr_table[3])
     await send_message(
         text=header + content,
         attachments=[navigation.as_markup()],
@@ -120,12 +192,14 @@ async def serve(event, filter_by, filter):
     )
 
 
-def pick_message_sender(event):
-    return event.message.answer if type(event) is MessageCreated else event.message.edit
+def pick_message_sender(event: MessageCreated | MessageCallback) -> Callable:
+    """Решает между редактированием (по кнопке) и отправкой нового сообщения (по команде)"""
+    return event.message.answer if type(event) is MessageCreated else event.message.edit  # ty:ignore[unresolved-attribute]
 
 
 @dp.message_created(Command("rasp"))
-async def menu_handler(event):
+async def menu_handler(event: MessageCreated | MessageCallback):
+    """Призывает поисковую строку"""
     send_message = pick_message_sender(event)
     global listening
     await try_load_tables(event)
@@ -137,12 +211,13 @@ async def menu_handler(event):
 
 
 @dp.message_created()
-async def search_handler(event):
-    send_message = pick_message_sender(event)
+async def search_handler(event: MessageCreated):
+    """Обрабатывает поисковые запросы"""
     global listening
     if listening:
         try:
-            query = normalize(event.message.body.text)
+            if event.message.body:
+                query = normalize(event.message.body.text)
             search_results = InlineKeyboardBuilder()
             search_results_shown = 0
             for searchable in codes | names:
@@ -157,21 +232,20 @@ async def search_handler(event):
                 raise Exception("Ничего не найдено :(")
             else:
                 search_results.row(SEARCH_BUTTON)
-                await send_message(
+                await event.message.answer(
                     text="Найдено:",
                     attachments=[search_results.as_markup()],
                 )
         except Exception as e:
-            await send_message(text=f"{e}\n\nПопробуйте еще раз")
+            await event.message.answer(text=f"{e}\n\nПопробуйте еще раз")
         else:
             listening = False
 
 
 @dp.message_callback()
-async def button_handler(event):
-    # Всегда свежие данные
+async def button_handler(event: MessageCallback):
+    """Занимается обработкой нажатий"""
     await try_load_tables(event)
-
     button_pressed = event.callback.payload
     if button_pressed in codes:
         await serve(event, filter_by_code, button_pressed)

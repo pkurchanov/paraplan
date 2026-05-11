@@ -1,6 +1,7 @@
+from typing import TypeAlias
 import logging
 from python_calamine import CalamineWorkbook, SheetVisibleEnum, ZipError
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 
 # Между днями по 12 строк, между занятиями по 2
@@ -10,6 +11,9 @@ CLASS_OFFSET = 3
 INST_Y_BASELINE = 9
 INST_X_BASELINE = 2
 
+Workweek: TypeAlias = list[list[tuple[str, str, str, str, str]]]
+Table: TypeAlias = tuple[date, str, str, Workweek]
+
 
 def normalize(x) -> str:
     """Чистит текстовые данные перед использованием"""
@@ -18,7 +22,7 @@ def normalize(x) -> str:
     return str(x).lower().strip()
 
 
-def parse_all(src_dir):
+def parse_all(src_dir: Path) -> list[Table]:
     """Принимает путь к директории с таблицами, упаковывает в общий вложенный массив данные всех листов"""
     time_tables = []
     for file in src_dir.iterdir():
@@ -31,7 +35,6 @@ def parse_all(src_dir):
             if sheetmd.visible == SheetVisibleEnum.Visible
         ]
         sheets = [book.get_sheet_by_name(name).to_python() for name in sheet_names]
-
         for sheet in sheets:
             # Начало недели
             date = datetime.strptime(normalize(sheet[3][3])[:10], "%d.%m.%Y").date()
@@ -55,7 +58,7 @@ def parse_all(src_dir):
                         workday = [(instructor_candidate.upper(),)]
                         break
                     # Название предмета (включая пометы в скобках)
-                    subject: str = sheet[inst_y - 1][inst_x]  # ty:ignore[invalid-assignment]
+                    subject = sheet[inst_y - 1][inst_x]
                     # Форма проведения занятия
                     form = normalize(sheet[inst_y + 1][inst_x])
                     # Кабинет
@@ -81,7 +84,7 @@ def parse_all(src_dir):
     return time_tables
 
 
-def main():
+def main() -> list[Table]:
     try:
         src_dir = Path(__file__).resolve().parent / "src"
     except NameError:
