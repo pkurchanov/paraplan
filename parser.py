@@ -1,8 +1,9 @@
-from typing import TypeAlias
 import logging
-from python_calamine import CalamineWorkbook, SheetVisibleEnum, ZipError
-from datetime import datetime, date
+from datetime import date, datetime
 from pathlib import Path
+from typing import TypeAlias
+
+from python_calamine import CalamineWorkbook, SheetVisibleEnum, ZipError
 
 # Между днями по 12 строк, между занятиями по 2
 DAY_OFFSET = 13

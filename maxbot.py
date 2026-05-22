@@ -5,7 +5,7 @@ from typing import Callable, TypedDict
 
 from maxapi import Bot, Dispatcher
 from maxapi.enums import Format
-from maxapi.types import Command, MessageCallback, MessageCreated
+from maxapi.types import BotStarted, Command, MessageCallback, MessageCreated
 from maxapi.types.attachments.buttons import CallbackButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
@@ -251,6 +251,17 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
 def pick_message_sender(event: MessageCreated | MessageCallback) -> Callable:
     """Решает между редактированием и отправкой нового сообщения смотря откуда вызван"""
     return event.message.answer if type(event) is MessageCreated else event.message.edit  # ty:ignore[unresolved-attribute]
+
+
+@dp.bot_started()
+async def greet(event: BotStarted):
+    await bot.send_message(
+        chat_id=event.chat_id,
+        text="🪂 Доступные команды:\n"
+        + "> /search\n\nНачать поиск по группе или по имени преподавателя\n"
+        + "> /refresh\n\nОбновить имеющиеся данные о расписаниях\n",
+        format=Format.MARKDOWN,
+    )
 
 
 @dp.message_created(Command("search"))
