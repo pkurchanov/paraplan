@@ -1,17 +1,19 @@
 import asyncio
 import logging
-
-from typing import Callable, TypedDict
 from datetime import datetime
-from parser import main as load_schedule, normalize, Table, Workweek
-from keys import TEST_TOKEN
+from typing import Callable, TypedDict
+
 from maxapi import Bot, Dispatcher
 from maxapi.enums import Format
-from maxapi.types import MessageCreated, Command, MessageCallback
-from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+from maxapi.types import Command, MessageCallback, MessageCreated
 from maxapi.types.attachments.buttons import CallbackButton
+from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
-bot = Bot(TEST_TOKEN)
+from parser import Table, Workweek, normalize
+from parser import main as load_schedule
+from tokens import TOKEN
+
+bot = Bot(TOKEN)
 dp = Dispatcher()
 logging.basicConfig(level=logging.INFO)
 
@@ -80,13 +82,13 @@ async def try_load_tables(event: MessageCreated | MessageCallback, force: bool =
 
 
 def filter_by_code(code: str) -> list[Table]:
-    """Отфильтровывает расписание по коду группы"""
+    """Фильтрует расписание по коду группы"""
     global schedule
     return [table for table in schedule if table[2] == code]
 
 
 def filter_by_name(name: str) -> list[Table]:
-    """Пересобирает расписание по имени преподавателя"""
+    """Собирает расписание по имени преподавателя"""
     global schedule
     date_map = {}
     for date, _, code, days in schedule:
