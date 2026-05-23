@@ -1,7 +1,7 @@
 import logging
 from datetime import date, datetime
 from pathlib import Path
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 from python_calamine import CalamineWorkbook, SheetVisibleEnum, ZipError
 
@@ -12,13 +12,12 @@ CLASS_OFFSET = 3
 INST_Y_BASELINE = 9
 INST_X_BASELINE = 2
 
-Timeslot: TypeAlias = tuple[str, str, str, str, str]
+FullClass: TypeAlias = tuple[str, str, str, str, str, str]
+UnfullClass: TypeAlias = Literal["", "выходной день"]
+Timeslot: TypeAlias = FullClass | UnfullClass
 Workday: TypeAlias = list[Timeslot]
 Workweek: TypeAlias = list[Workday]
 Table: TypeAlias = tuple[date, str, Workweek]
-
-# Потенциальные улучшения:
-# - Явно хранить время
 
 
 def normalize(x) -> str:
@@ -64,10 +63,10 @@ def parse_all(src_dir: Path) -> list[Table]:
                     # Имя преподавателя либо один из двух особых случаев
                     instr_slot: str = normalize(sheet[inst_y][inst_x])
                     if instr_slot == "":
-                        workday.append((instr_slot, "", "", "", ""))
+                        workday.append("")
                         continue
                     if instr_slot == "выходной день":
-                        workday = [(instr_slot.upper(), "", "", "", "")]
+                        workday = ["выходной день"]
                         break
 
                     # Название предмета, включая пометы в скобках
@@ -92,11 +91,16 @@ def parse_all(src_dir: Path) -> list[Table]:
                         link_slot = sheet[inst_y - 1][inst_x + 3]
                         # здесь тоже было бы странным что-то кроме строки
                         if link_slot:
-                            link: str = link_slot  # ty:ignore[invalid-assignment]
+                            link = link_slot  # ty:ignore[invalid-assignment]
                     except IndexError:
                         pass
 
-                    workday.append((instr_slot.title(), subject, form, classroom, link))
+                    # Время занятия
+                    time: str = sheet[inst_y][inst_x - 1]  # ty:ignore[invalid-assignment]
+
+                    workday.append(
+                        (instr_slot.title(), subject, form, classroom, link, time)
+                    )
                 workweek.append(workday)
             time_tables.append((date, code.upper(), workweek))
     return time_tables

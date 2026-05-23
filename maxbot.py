@@ -13,9 +13,9 @@ from parser import Table, Workweek, normalize
 from parser import main as load_schedule
 from tokens import TOKEN
 
-bot = Bot(TOKEN)
-dp = Dispatcher()
 logging.basicConfig(level=logging.INFO)
+bot = Bot(TOKEN, format=Format.MARKDOWN)
+dp = Dispatcher()
 
 FilterFunc = Callable[[str], list[Table]]
 
@@ -27,7 +27,7 @@ class Context(TypedDict):
     index: int
 
 
-SEARCH_RESULTS_SHOWN = 10
+SEARCH_RESULTS_SHOWN = 5
 SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload="back")
 DAYS_OF_WEEK = (
     "# ☕️ Понедельник\n",
@@ -65,7 +65,7 @@ async def load_tables(force: bool = False):
             for table in schedule
             for day in table[2]
             for lesson in day
-            if (name := lesson[0]) and name not in ("", "ВЫХОДНОЙ ДЕНЬ")
+            if lesson not in ("", "ВЫХОДНОЙ ДЕНЬ") and (name := lesson[0])
         )
 
 
@@ -84,7 +84,7 @@ async def try_load_tables(event: MessageCreated | MessageCallback, force: bool =
 def filter_by_code(code: str) -> list[Table]:
     """Фильтрует расписание по коду группы"""
     global schedule
-    return [table for table in schedule if table[2] == code]
+    return [table for table in schedule if table[1] == code]
 
 
 def filter_by_name(name: str) -> list[Table]:
@@ -113,33 +113,31 @@ def make_header(table: Table, filter_by: FilterFunc, search_term: str) -> str:
 
 def make_content(workweek: Workweek) -> str:
     """Формирует текст расписания"""
-    to_display = ""
+    message_text = ""
     for day_idx, day in enumerate(workweek):
-        has_content = False
-        for c in day:
-            if c[0]:
-                has_content = True
-                break
-        if not has_content:
-            continue
-        to_display += DAYS_OF_WEEK[day_idx]
-        for class_idx, c in enumerate(day):
-            if c[0] == "":
+        message_text += DAYS_OF_WEEK[day_idx]
+        day_text = ""
+        for ts_idx, ts in enumerate(day):
+            if ts == "":
                 continue
-            elif c[0] == "ВЫХОДНОЙ ДЕНЬ":
-                to_display += "> Выходной день 🎉\n"
+            elif ts == "выходной день":
+                day_text += "> Выходной день 🎉\n"
                 break
             else:
-                instr_or_group_name = c[0]
-                class_name = c[1]
-                class_room = c[3]
-                class_form = c[2] if not c[4] else f"[{c[2]}]({c[4]})"
-                to_display += f"> {NUMBERS[class_idx]} {class_name}\n"
-                to_display += f"👤 *{instr_or_group_name}*\n"
-                to_display += f"🚪 *{class_form}, {class_room}*\n\n"
-    if not to_display.strip():
-        return "> Нет занятий на эту неделю ✨\n"
-    return to_display
+                instr_or_group_name = ts[0]
+                class_name, class_room, class_time = ts[1], ts[3], ts[5]
+                # Кликабельно если есть ссылка
+                class_form = f"[{ts[2]}]({ts[4]})" if ts[4] else ts[2]
+                day_text += (
+                    f"> {NUMBERS[ts_idx]} {class_name}\n"
+                    + f"👤 *{instr_or_group_name}*\n"
+                    + f"🕰️ *{class_time}*\n"
+                    + f"🚪 *{class_form}, {class_room}*\n\n"
+                )
+        if not day_text:
+            day_text += "> Нет занятий 🍃\n"
+        message_text += day_text
+    return message_text
 
 
 def make_navigation() -> InlineKeyboardBuilder:
@@ -177,7 +175,6 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
     await send_message(
         text=header + content,
         attachments=[navigation.as_markup()],
-        format=Format.MARKDOWN,
     )
 
 
@@ -206,7 +203,6 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
         await send_message(
             text=boundary_msg,
             attachments=[make_navigation().as_markup()],
-            format=Format.MARKDOWN,
         )
         return
     context["index"] = new_idx
@@ -216,7 +212,6 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
     await send_message(
         text=header + content,
         attachments=[make_navigation().as_markup()],
-        format=Format.MARKDOWN,
     )
 
 
@@ -232,7 +227,6 @@ async def greet(event: BotStarted):
         text="🪂 Доступные команды:\n"
         + "> /search\n\nНачать поиск по группе или по имени преподавателя\n"
         + "> /refresh\n\nОбновить имеющиеся данные о расписаниях\n",
-        format=Format.MARKDOWN,
     )
 
 
