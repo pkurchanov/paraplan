@@ -49,7 +49,7 @@ listening: bool = False
 # Потенциальные улучшения:
 # - Мемоизировать уже отфильтрованные таблицы
 # - Преднормализовать поисковые метки
-# - Ввести TTL для кэшей
+# - Автоматически обновлять кэш
 
 
 async def load_tables(force: bool = False):
@@ -59,11 +59,11 @@ async def load_tables(force: bool = False):
         schedule = load_schedule()
         codes.clear()
         names.clear()
-        codes.update(t[2] for t in schedule)
+        codes.update(t[1] for t in schedule)
         names.update(
             name
             for table in schedule
-            for day in table[3]
+            for day in table[2]
             for lesson in day
             if (name := lesson[0]) and name not in ("", "ВЫХОДНОЙ ДЕНЬ")
         )
@@ -90,36 +90,8 @@ def filter_by_code(code: str) -> list[Table]:
 def filter_by_name(name: str) -> list[Table]:
     """Собирает расписание по имени преподавателя"""
     global schedule
-    date_map = {}
-    for date, _, code, days in schedule:
-        if date not in date_map:
-            date_map[date] = [[] for _ in days]
-        for day_idx, day in enumerate(days):
-            for slot, c in enumerate(day):
-                if len(c) == 5 and c[0] == name:
-                    date_map[date][day_idx].append((slot, code, c[1], c[2], c[3], c[4]))
-    result = []
-    for date in date_map:
-        new_days = []
-        for day_slots in date_map[date]:
-            if not day_slots:
-                new_days.append([("",)])
-                continue
-            by_slot = {}
-            for slot, code, cname, form, room, link in day_slots:
-                by_slot.setdefault(slot, []).append((code, cname, form, room, link))
-            filtered_day = []
-            for slot in sorted(by_slot.keys()):
-                entries = by_slot[slot]
-                if len(entries) == 1:
-                    filtered_day.append(entries[0])
-                else:
-                    codes = ", ".join(dict.fromkeys(e[0] for e in entries))
-                    _, cname, form, room, link = entries[0]
-                    filtered_day.append((codes, cname, form, room, link))
-            new_days.append(filtered_day if filtered_day else [("",)])
-        result.append((date, "", name, new_days))
-    return result
+    # FIXME: давай по новой
+    raise NotImplementedError
 
 
 def get_sorted_tables(filtered_tables: list[Table]) -> list[Table]:
@@ -201,7 +173,7 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
     }
     navigation = make_navigation()
     header = make_header(curr_table, filter_by, search_term)
-    content = make_content(curr_table[3])
+    content = make_content(curr_table[2])
     await send_message(
         text=header + content,
         attachments=[navigation.as_markup()],
@@ -240,7 +212,7 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
     context["index"] = new_idx
     selected_table = tables[new_idx]
     header = make_header(selected_table, context["filter_by"], context["search_term"])
-    content = make_content(selected_table[3])
+    content = make_content(selected_table[2])
     await send_message(
         text=header + content,
         attachments=[make_navigation().as_markup()],

@@ -12,8 +12,13 @@ CLASS_OFFSET = 3
 INST_Y_BASELINE = 9
 INST_X_BASELINE = 2
 
-Workweek: TypeAlias = list[list[tuple[str, str, str, str, str]]]
-Table: TypeAlias = tuple[date, str, str, Workweek]
+Timeslot: TypeAlias = tuple[str, str, str, str, str]
+Workday: TypeAlias = list[Timeslot]
+Workweek: TypeAlias = list[Workday]
+Table: TypeAlias = tuple[date, str, Workweek]
+
+# Потенциальные улучшения:
+# - Явно хранить время
 
 
 def normalize(x) -> str:
@@ -25,9 +30,10 @@ def normalize(x) -> str:
 
 def parse_all(src_dir: Path) -> list[Table]:
     """Принимает путь к директории с таблицами, упаковывает в общий вложенный массив данные всех листов"""
-    time_tables = []
+    time_tables: list[Table] = []
     for file in src_dir.iterdir():
-        if file.suffix != ".xlsx":
+        # Отбираются экселевские файлы, а из них нескрытые листы
+        if file.suffix[:4] != ".xls":
             continue
         book = CalamineWorkbook.from_path(file)
         sheet_names = [
@@ -36,52 +42,63 @@ def parse_all(src_dir: Path) -> list[Table]:
             if sheetmd.visible == SheetVisibleEnum.Visible
         ]
         sheets = [book.get_sheet_by_name(name).to_python() for name in sheet_names]
+
         for sheet in sheets:
             # Начало недели
             date = datetime.strptime(normalize(sheet[3][3])[:10], "%d.%m.%Y").date()
-            # Курс
-            year = normalize(sheet[4][2])
+
             # Код группы
             code = normalize(sheet[6][2])
+
             # Сама рабочая неделя
-            workweek = []
+            workweek: Workweek = []
+
             for i in range(6):
                 # Полный рабочий день
-                workday = []
+                workday: Workday = []
+
                 for j in range(4):
                     inst_y = INST_Y_BASELINE + i * DAY_OFFSET + j * CLASS_OFFSET
                     inst_x = INST_X_BASELINE
-                    instructor_candidate = normalize(sheet[inst_y][inst_x])
-                    if instructor_candidate == "":
-                        workday.append((instructor_candidate,))
+
+                    # Имя преподавателя либо один из двух особых случаев
+                    instr_slot: str = normalize(sheet[inst_y][inst_x])
+                    if instr_slot == "":
+                        workday.append((instr_slot, "", "", "", ""))
                         continue
-                    if instructor_candidate == "выходной день":
-                        workday = [(instructor_candidate.upper(),)]
+                    if instr_slot == "выходной день":
+                        workday = [(instr_slot.upper(), "", "", "", "")]
                         break
-                    # Название предмета (включая пометы в скобках)
-                    subject = sheet[inst_y - 1][inst_x]
+
+                    # Название предмета, включая пометы в скобках
+                    # нет оснований полагать, что здесь возможно что-то помимо строки
+                    subject: str = sheet[inst_y - 1][inst_x]  # ty:ignore[invalid-assignment]
+
                     # Форма проведения занятия
-                    form = normalize(sheet[inst_y + 1][inst_x])
+                    form: str = normalize(sheet[inst_y + 1][inst_x])
+
                     # Кабинет
+                    classroom: str
                     if form == "асинхронно":
-                        corner_num = normalize(sheet[inst_y + 1][inst_x + 2])
+                        corner_num = sheet[inst_y + 1][inst_x + 2]
                         if corner_num:
-                            classroom = corner_num
+                            classroom = normalize(corner_num)
                     else:
                         classroom = normalize(sheet[inst_y][inst_x + 2])
+
                     # Ссылка, если есть
-                    link = ""
+                    link: str = ""
                     try:
-                        linkspot = sheet[inst_y - 1][inst_x + 3]
-                        if linkspot:
-                            link = linkspot
+                        link_slot = sheet[inst_y - 1][inst_x + 3]
+                        # здесь тоже было бы странным что-то кроме строки
+                        if link_slot:
+                            link: str = link_slot  # ty:ignore[invalid-assignment]
                     except IndexError:
                         pass
-                    workday.append(
-                        (instructor_candidate.title(), subject, form, classroom, link)
-                    )
+
+                    workday.append((instr_slot.title(), subject, form, classroom, link))
                 workweek.append(workday)
-            time_tables.append((date, year, code.upper(), workweek))
+            time_tables.append((date, code.upper(), workweek))
     return time_tables
 
 
