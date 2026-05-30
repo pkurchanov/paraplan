@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Callable, TypedDict
 
 from maxapi import Bot, Dispatcher
@@ -9,7 +9,7 @@ from maxapi.types import BotStarted, Command, MessageCallback, MessageCreated
 from maxapi.types.attachments.buttons import CallbackButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
-from parser import Table, Workweek, normalize
+from parser import FullClass, Table, Workday, Workweek, normalize
 from parser import main as load_schedule
 from tokens import TOKEN
 
@@ -90,8 +90,58 @@ def filter_by_code(code: str) -> list[Table]:
 def filter_by_name(name: str) -> list[Table]:
     """Собирает расписание по имени преподавателя"""
     global schedule
-    # FIXME: давай по новой
-    raise NotImplementedError
+
+    class _AggCell(TypedDict):
+        groups: list[str]
+        data: FullClass | None
+
+    agg: dict[str, dict[date, list[list[_AggCell]]]] = {}
+    for t_date, group_code, workweek in schedule:
+        for day_idx, workday in enumerate(workweek):
+            for slot_idx, ts in enumerate(workday):
+                if not isinstance(ts, tuple):
+                    continue
+                instructor = ts[0]
+                if instructor not in agg:
+                    agg[instructor] = {}
+                if t_date not in agg[instructor]:
+                    agg[instructor][t_date] = [
+                        [{"groups": [], "data": None} for _ in range(4)]
+                        for _ in range(6)
+                    ]
+                cell = agg[instructor][t_date][day_idx][slot_idx]
+                cell["groups"].append(group_code)
+                if cell["data"] is None:
+                    cell["data"] = ts
+    result: list[Table] = []
+    for instructor, dates_dict in agg.items():
+        if name and instructor.lower() != name.lower():
+            continue
+        for t_date, workweek_structure in dates_dict.items():
+            new_workweek: Workweek = []
+            for day_idx in range(6):
+                new_workday: Workday = []
+                for slot_idx in range(4):
+                    cell = workweek_structure[day_idx][slot_idx]
+                    if not cell["groups"]:
+                        new_workday.append("")
+                        continue
+                    groups_str = ", ".join(sorted(set(cell["groups"])))
+                    orig_data = cell["data"]
+                    if orig_data is None:
+                        continue
+                    new_ts: FullClass = (
+                        groups_str,
+                        orig_data[1],
+                        orig_data[2],
+                        orig_data[3],
+                        orig_data[4],
+                        orig_data[5],
+                    )
+                    new_workday.append(new_ts)
+                new_workweek.append(new_workday)
+            result.append((t_date, instructor, new_workweek))
+    return result
 
 
 def get_sorted_tables(filtered_tables: list[Table]) -> list[Table]:
@@ -124,13 +174,13 @@ def make_content(workweek: Workweek) -> str:
                 day_text += "> Выходной день 🎉\n"
                 break
             else:
-                instr_or_group_name = ts[0]
+                name_or_codes = ts[0]
                 class_name, class_room, class_time = ts[1], ts[3], ts[5]
                 # Кликабельно если есть ссылка
                 class_form = f"[{ts[2]}]({ts[4]})" if ts[4] else ts[2]
                 day_text += (
                     f"> {NUMBERS[ts_idx]} {class_name}\n"
-                    + f"👤 *{instr_or_group_name}*\n"
+                    + f"👤 *{name_or_codes}*\n"
                     + f"🕰️ *{class_time}*\n"
                     + f"🚪 *{class_form}, {class_room}*\n\n"
                 )
@@ -225,8 +275,8 @@ async def greet(event: BotStarted):
     await bot.send_message(
         chat_id=event.chat_id,
         text="🪂 Доступные команды:\n"
-        + "> /search\n\nНачать поиск по группе или по имени преподавателя\n"
-        + "> /refresh\n\nОбновить имеющиеся данные о расписаниях\n",
+        + "> /search\n\nПоиск по группе или по имени преподавателя\n"
+        + "> /refresh\n\nОбновить данные о расписаниях\n",
     )
 
 
