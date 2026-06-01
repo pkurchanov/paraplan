@@ -30,7 +30,7 @@ def normalize(x) -> str:
 def parse_all(src_dir: Path) -> list[Table]:
     """Принимает путь к директории с таблицами, упаковывает в общий вложенный массив данные всех листов"""
     time_tables: list[Table] = []
-    for file in src_dir.iterdir():
+    for file in src_dir.rglob("*"):
         # Отбираются экселевские файлы, а из них нескрытые листы
         if file.suffix[:4] != ".xls":
             continue
@@ -114,7 +114,7 @@ def main() -> list[Table]:
     try:
         return parse_all(src_dir)
     except Exception as e:
-        if type(e) is ZipError:
+        if isinstance(e, ZipError):
             e.add_note(
                 "Все таблицы должны быть сохранены и закрыты перед началом работы"
             )

@@ -69,18 +69,6 @@ async def load_tables(force: bool = False):
         )
 
 
-async def try_load_tables(event: MessageCreated | MessageCallback, force: bool = False):
-    """Более осторожный младший брат load_tables"""
-    send_message = pick_message_sender(event)
-    try:
-        await load_tables(force)
-    except Exception as e:
-        await send_message(
-            text=f"⚠️ Возникла проблема при загрузке таблиц:\n{e}",
-            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
-        )
-
-
 def filter_by_code(code: str) -> list[Table]:
     """Фильтрует расписание по коду группы"""
     global schedule
@@ -284,12 +272,15 @@ async def greet(event: BotStarted):
 async def searchbar_summoner(event: MessageCreated | MessageCallback):
     send_message = pick_message_sender(event)
     global listening
-    await try_load_tables(event)
-    await send_message(
-        text="Напишите код группы или ФИО преподавателя",
-        attachments=[],
-    )
-    listening = True
+    try:
+        await load_tables()
+        await send_message(
+            text="Напишите код группы или ФИО преподавателя",
+            attachments=[],
+        )
+        listening = True
+    except Exception as e:
+        await send_message(text=f"⚠️ Ошибка загрузки таблиц: {e}")
 
 
 @dp.message_created()
@@ -326,15 +317,15 @@ async def search_handler(event: MessageCreated):
 async def refresh_handler(event: MessageCreated):
     send_message = pick_message_sender(event)
     try:
-        await try_load_tables(event, force=True)
+        await load_tables(force=True)
         await send_message(text="✅ Расписание обновлено")
     except Exception as e:
-        await send_message(text=f"⚠️ Ошибка обновления: {e}")
+        await send_message(text=f"⚠️ Ошибка обновления таблиц: {e}")
 
 
 @dp.message_callback()
 async def button_handler(event: MessageCallback):
-    await try_load_tables(event)
+    await load_tables()
     button_pressed = event.callback.payload
     user_id = event.callback.user.user_id
     if button_pressed in codes:
