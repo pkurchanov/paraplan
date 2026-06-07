@@ -28,7 +28,7 @@ def normalize(x) -> str:
 
 
 def parse_all(src_dir: Path) -> list[Table]:
-    """Принимает путь к директории с таблицами, упаковывает в общий вложенный массив данные всех листов"""
+    """Принимает путь к каталогу таблиц и упаковывает в список Table-ов данные всех листов"""
     time_tables: list[Table] = []
     for file in src_dir.rglob("*"):
         # Отбираются экселевские файлы, а из них нескрытые листы
@@ -77,13 +77,11 @@ def parse_all(src_dir: Path) -> list[Table]:
                     form: str = normalize(sheet[inst_y + 1][inst_x])
 
                     # Кабинет
-                    classroom: str
-                    if form == "асинхронно":
+                    classroom: str = normalize(sheet[inst_y][inst_x + 2])
+                    if classroom == "ЭИОС":
                         corner_num = sheet[inst_y + 1][inst_x + 2]
                         if corner_num:
                             classroom = normalize(corner_num)
-                    else:
-                        classroom = normalize(sheet[inst_y][inst_x + 2])
 
                     # Ссылка, если есть
                     link: str = ""
@@ -108,7 +106,7 @@ def parse_all(src_dir: Path) -> list[Table]:
 
 def main() -> list[Table]:
     try:
-        src_dir = Path(__file__).resolve().parent / "src"
+        src_dir = Path(__file__).resolve().parent / "raw"
     except NameError:
         src_dir = Path.cwd() / "src"
     try:
