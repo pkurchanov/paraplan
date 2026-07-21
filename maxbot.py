@@ -20,11 +20,12 @@ dp = Dispatcher()
 FilterFunc = Callable[[str], list[Table]]
 
 
-class Context(TypedDict):
+class Context(TypedDict, total=False):
     filter_by: FilterFunc
     search_term: str
     tables: list[Table]
     index: int
+    listening: bool
 
 
 SEARCH_RESULTS_SHOWN = 5
@@ -44,7 +45,6 @@ schedule: list[Table] = []
 codes: set[str] = set()
 names: set[str] = set()
 user_context: dict[int, Context] = {}
-listening: bool = False
 
 # Потенциальные улучшения:
 # - Мемоизировать уже отфильтрованные таблицы
@@ -258,6 +258,12 @@ def pick_message_sender(event: MessageCreated | MessageCallback) -> Callable:
     return event.message.answer if type(event) is MessageCreated else event.message.edit  # ty:ignore[unresolved-attribute]
 
 
+def get_user_id(event: MessageCreated | MessageCallback) -> int:
+    if type(event) is MessageCreated:
+        return getattr(getattr(event.message, "user", event.message), "user_id", 0)
+    return event.callback.user.user_id  # ty:ignore[unresolved-attribute]
+
+
 @dp.bot_started()
 async def greet(event: BotStarted):
     await bot.send_message(
@@ -271,14 +277,16 @@ async def greet(event: BotStarted):
 @dp.message_created(Command("search"))
 async def searchbar_summoner(event: MessageCreated | MessageCallback):
     send_message = pick_message_sender(event)
-    global listening
+    user_id = get_user_id(event)
     try:
         await load_tables()
         await send_message(
             text="Напишите код группы или ФИО преподавателя",
             attachments=[],
         )
-        listening = True
+        if user_id not in user_context:
+            user_context[user_id] = {}
+        user_context[user_id]["listening"] = True
     except Exception as e:
         await send_message(text=f"⚠️ Ошибка загрузки таблиц: {e}")
 
@@ -286,8 +294,8 @@ async def searchbar_summoner(event: MessageCreated | MessageCallback):
 @dp.message_created()
 async def search_handler(event: MessageCreated):
     send_message = pick_message_sender(event)
-    global listening
-    if listening:
+    user_id = get_user_id(event)
+    if user_context.get(user_id, {}).get("listening"):
         try:
             if event.message.body:
                 query = normalize(event.message.body.text)
@@ -310,7 +318,7 @@ async def search_handler(event: MessageCreated):
         except Exception as e:
             await send_message(text=f"{e}\n\nПопробуйте еще раз")
         else:
-            listening = False
+            user_context[user_id]["listening"] = False
 
 
 @dp.message_created(Command("refresh"))
