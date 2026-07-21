@@ -220,33 +220,45 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
     """Обрабатывает переключение недель"""
     send_message = pick_message_sender(event)
     context = user_context.get(user_id)
+
     if not context:
         await send_message(
             text="⚠️ Сессия истекла. Начните поиск заново.",
             attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
         )
         return
+
     tables = context["tables"]
     curr_idx = context["index"]
+
     if direction == "next":
         new_idx = curr_idx - 1
     else:
         new_idx = curr_idx + 1
+
     if new_idx < 0 or new_idx >= len(tables):
         boundary_msg = (
-            "Это последняя доступная неделя 📚"
+            "⚠️ **Это последняя доступная неделя** 📚\n\n"
             if direction == "next"
-            else "📚 Это самая ранняя запись в архиве"
+            else "📚 **Это самая ранняя запись в архиве** ⚠️\n\n"
         )
+        selected_table = tables[curr_idx]
+        header = make_header(
+            selected_table, context["filter_by"], context["search_term"]
+        )
+        content = make_content(selected_table[2])
+
         await send_message(
-            text=boundary_msg,
+            text=boundary_msg + header + content,
             attachments=[make_navigation().as_markup()],
         )
         return
+
     context["index"] = new_idx
     selected_table = tables[new_idx]
     header = make_header(selected_table, context["filter_by"], context["search_term"])
     content = make_content(selected_table[2])
+
     await send_message(
         text=header + content,
         attachments=[make_navigation().as_markup()],
