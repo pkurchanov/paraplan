@@ -1,7 +1,9 @@
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import date, datetime
-from typing import Callable, TypedDict
+from typing import TypedDict
+from zoneinfo import ZoneInfo
 
 from maxapi import Bot, Dispatcher
 from maxapi.enums import Format
@@ -54,7 +56,7 @@ user_context: dict[int, Context] = {}
 
 async def load_tables(force: bool = False):
     """Загружает таблицы и обновляет поисковые метки"""
-    global schedule, codes, names
+    global schedule, codes, names  # noqa: PLW0602
     if force or not schedule:
         schedule = load_schedule()
         codes.clear()
@@ -71,13 +73,11 @@ async def load_tables(force: bool = False):
 
 def filter_by_code(code: str) -> list[Table]:
     """Фильтрует расписание по коду группы"""
-    global schedule
     return [table for table in schedule if table[1] == code]
 
 
 def filter_by_name(name: str) -> list[Table]:
     """Собирает расписание по имени преподавателя"""
-    global schedule
 
     class _AggCell(TypedDict):
         groups: list[str]
@@ -139,7 +139,7 @@ def get_sorted_tables(filtered_tables: list[Table]) -> list[Table]:
 
 def pick_current_table(tables: list[Table]) -> Table:
     """Выбирает позднейшую из недель, начавшихся до сегодняшнего дня"""
-    curr_date = datetime.now().date()
+    curr_date = datetime.now(ZoneInfo("Asia/Krasnoyarsk")).date()
     return max((t for t in tables if t[0] < curr_date), key=lambda x: x[0])
 
 
