@@ -3,7 +3,6 @@ import logging
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import TypedDict
-from zoneinfo import ZoneInfo
 
 from maxapi import Bot, Dispatcher
 from maxapi.enums import Format
@@ -11,7 +10,7 @@ from maxapi.types import BotStarted, Command, MessageCallback, MessageCreated
 from maxapi.types.attachments.buttons import CallbackButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
-from parser import FullClass, Table, Workday, Workweek, normalize
+from parser import DAY_OFF, EMPTY, TZ, FullClass, Table, Workday, Workweek, normalize
 from parser import main as load_schedule
 from tokens import TOKEN
 
@@ -31,7 +30,14 @@ class Context(TypedDict, total=False):
 
 
 SEARCH_RESULTS_SHOWN = 5
-SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload="back")
+
+# Служебные ключи кнопок
+NAV_BACK = "nav:back"
+NAV_PREV = "nav:prev"
+NAV_NEXT = "nav:next"
+
+SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload=NAV_BACK)
+
 DAYS_OF_WEEK = (
     "# ☕️ Понедельник\n",
     "# 📈 Вторник\n",
@@ -52,23 +58,29 @@ user_context: dict[int, Context] = {}
 # - Мемоизировать уже отфильтрованные таблицы
 # - Преднормализовать поисковые метки
 # - Автоматически обновлять кэш
+_load_lock = asyncio.Lock()
 
 
 async def load_tables(force: bool = False):
     """Загружает таблицы и обновляет поисковые метки"""
     global schedule, codes, names  # noqa: PLW0602
-    if force or not schedule:
-        schedule = load_schedule()
-        codes.clear()
-        names.clear()
-        codes.update(t[1] for t in schedule)
-        names.update(
-            name
-            for table in schedule
-            for day in table[2]
-            for lesson in day
-            if lesson not in ("", "ВЫХОДНОЙ ДЕНЬ") and (name := lesson[0])
-        )
+
+    async with _load_lock:
+        if force or not schedule:
+            schedule = await asyncio.to_thread(load_schedule)
+
+            codes.clear()
+            names.clear()
+
+            codes.update(t[1] for t in schedule)
+
+            names.update(
+                name
+                for table in schedule
+                for day in table[2]
+                for lesson in day
+                if isinstance(lesson, tuple) and (name := lesson[0])
+            )
 
 
 def filter_by_code(code: str) -> list[Table]:
@@ -88,6 +100,9 @@ def filter_by_name(name: str) -> list[Table]:
         for day_idx, workday in enumerate(workweek):
             for slot_idx, ts in enumerate(workday):
                 if not isinstance(ts, tuple):
+                    continue
+                # Защита от неожиданных размеров недели
+                if day_idx >= 6 or slot_idx >= 4:
                     continue
                 instructor = ts[0]
                 if instructor not in agg:
@@ -112,11 +127,12 @@ def filter_by_name(name: str) -> list[Table]:
                 for slot_idx in range(4):
                     cell = workweek_structure[day_idx][slot_idx]
                     if not cell["groups"]:
-                        new_workday.append("")
+                        new_workday.append(EMPTY)
                         continue
                     groups_str = ", ".join(sorted(set(cell["groups"])))
                     orig_data = cell["data"]
                     if orig_data is None:
+                        new_workday.append(EMPTY)
                         continue
                     new_ts: FullClass = (
                         groups_str,
@@ -137,43 +153,55 @@ def get_sorted_tables(filtered_tables: list[Table]) -> list[Table]:
     return sorted(filtered_tables, key=lambda x: x[0], reverse=True)
 
 
-def pick_current_table(tables: list[Table]) -> Table:
-    """Выбирает позднейшую из недель, начавшихся до сегодняшнего дня"""
-    curr_date = datetime.now(ZoneInfo("Asia/Krasnoyarsk")).date()
-    return max((t for t in tables if t[0] < curr_date), key=lambda x: x[0])
+def pick_current_table(tables: list[Table]) -> Table | None:
+    """Выбирает позднейшую из недель, начавшихся не позже сегодняшнего дня"""
+    curr_date = datetime.now(TZ).date()
+    eligible = [t for t in tables if t[0] <= curr_date]
+
+    if eligible:
+        return max(eligible, key=lambda x: x[0])
+
+    if tables:
+        return min(tables, key=lambda x: x[0])
+
+    return None
 
 
 def make_header(table: Table, filter_by: FilterFunc, search_term: str) -> str:
     """Формирует заголовок расписания"""
     entity_type = "преподавателя" if filter_by is filter_by_name else "группы"
-    return f"🗓️ Расписание на **{table[0]}** для {entity_type} {search_term}:\n"
+    return f"Расписание на {table[0]} для {entity_type} {search_term}:\n"
 
 
 def make_content(workweek: Workweek) -> str:
     """Формирует текст расписания"""
     message_text = ""
     for day_idx, day in enumerate(workweek):
+        # Защита от неожиданных размеров недели
+        if day_idx >= len(DAYS_OF_WEEK):
+            break
         message_text += DAYS_OF_WEEK[day_idx]
         day_text = ""
         for ts_idx, ts in enumerate(day):
-            if ts == "":
+            if ts == EMPTY:
                 continue
-            elif ts == "выходной день":
-                day_text += "> Выходной день 🎉\n"
+            elif ts == DAY_OFF:
+                day_text += " > Выходной день\n"
                 break
             else:
                 name_or_codes = ts[0]
                 class_name, class_room, class_time = ts[1], ts[3], ts[5]
                 # Кликабельно если есть ссылка
                 class_form = f"[{ts[2]}]({ts[4]})" if ts[4] else ts[2]
+                number = NUMBERS[ts_idx] if ts_idx < len(NUMBERS) else ""
                 day_text += (
-                    f"> {NUMBERS[ts_idx]} {class_name}\n"
+                    f" > {number} {class_name}\n"
                     + f"👤 *{name_or_codes}*\n"
                     + f"🕰️ *{class_time}*\n"
                     + f"🚪 *{class_form}, {class_room}*\n\n"
                 )
         if not day_text:
-            day_text += "> Нет занятий 🍃\n"
+            day_text += " > Нет занятий\n"
         message_text += day_text
     return message_text
 
@@ -183,8 +211,8 @@ def make_navigation() -> InlineKeyboardBuilder:
     return (
         InlineKeyboardBuilder()
         .row(
-            CallbackButton(text="⬅️ Пред. неделя", payload="prev"),
-            CallbackButton(text="След. неделя ➡️", payload="next"),
+            CallbackButton(text="⬅️ Пред. неделя", payload=NAV_PREV),
+            CallbackButton(text="След. неделя ➡️", payload=NAV_NEXT),
         )
         .row(SEARCH_BUTTON)
     )
@@ -194,8 +222,22 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
     """Оркестрирует формирование сообщения и обновление контекста"""
     send_message = pick_message_sender(event)
     filtered_tables = filter_by(search_term)
+    if not filtered_tables:
+        await send_message(
+            text="Ничего не найдено",
+            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+        )
+        return
     sorted_tables = get_sorted_tables(filtered_tables)
-    curr_table = pick_current_table(filtered_tables)
+    curr_table = pick_current_table(sorted_tables)
+
+    if curr_table is None:
+        await send_message(
+            text="Ничего не найдено",
+            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+        )
+        return
+
     try:
         curr_idx = next(i for i, t in enumerate(sorted_tables) if t[0] == curr_table[0])
     except StopIteration:
@@ -223,13 +265,22 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
 
     if not context:
         await send_message(
-            text="⚠️ Сессия истекла. Начните поиск заново.",
+            text="⚠️ Сессия истекла! Начните поиск заново",
             attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
         )
         return
 
-    tables = context["tables"]
-    curr_idx = context["index"]
+    tables = context.get("tables", [])
+    curr_idx = context.get("index", 0)
+    filter_by = context.get("filter_by") or filter_by_code
+    search_term = context.get("search_term", "")
+
+    if not tables or curr_idx < 0 or curr_idx >= len(tables):
+        await send_message(
+            text="⚠️ Сессия истекла! Начните поиск заново",
+            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+        )
+        return
 
     if direction == "next":
         new_idx = curr_idx - 1
@@ -243,9 +294,7 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
             else "📚 **Это самая ранняя запись в архиве** ⚠️\n\n"
         )
         selected_table = tables[curr_idx]
-        header = make_header(
-            selected_table, context["filter_by"], context["search_term"]
-        )
+        header = make_header(selected_table, filter_by, search_term)
         content = make_content(selected_table[2])
 
         await send_message(
@@ -256,7 +305,8 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
 
     context["index"] = new_idx
     selected_table = tables[new_idx]
-    header = make_header(selected_table, context["filter_by"], context["search_term"])
+
+    header = make_header(selected_table, filter_by, search_term)
     content = make_content(selected_table[2])
 
     await send_message(
@@ -299,8 +349,9 @@ async def searchbar_summoner(event: MessageCreated | MessageCallback):
         if user_id not in user_context:
             user_context[user_id] = {}
         user_context[user_id]["listening"] = True
-    except Exception as e:
-        await send_message(text=f"⚠️ Ошибка загрузки таблиц: {e}")
+    except Exception:
+        logging.exception("Ошибка загрузки таблиц")
+        await send_message(text="⚠️ Ошибка загрузки таблиц")
 
 
 @dp.message_created()
@@ -309,8 +360,14 @@ async def search_handler(event: MessageCreated):
     user_id = get_user_id(event)
     if user_context.get(user_id, {}).get("listening"):
         try:
-            if event.message.body:
-                query = normalize(event.message.body.text)
+            if not event.message.body:
+                raise Exception("Пустой запрос")
+
+            query = normalize(event.message.body.text)
+
+            if not query:
+                raise Exception("Пустой запрос")
+
             search_results = InlineKeyboardBuilder()
             search_results_shown = 0
             for term in codes | names:
@@ -330,7 +387,8 @@ async def search_handler(event: MessageCreated):
         except Exception as e:
             await send_message(text=f"{e}\n\nПопробуйте еще раз")
         else:
-            user_context[user_id]["listening"] = False
+            if user_id in user_context:
+                user_context[user_id]["listening"] = False
 
 
 @dp.message_created(Command("refresh"))
@@ -339,23 +397,35 @@ async def refresh_handler(event: MessageCreated):
     try:
         await load_tables(force=True)
         await send_message(text="✅ Расписание обновлено")
-    except Exception as e:
-        await send_message(text=f"⚠️ Ошибка обновления таблиц: {e}")
+    except Exception:
+        logging.exception("Ошибка обновления таблиц")
+        await send_message(text="⚠️ Ошибка обновления таблиц")
 
 
 @dp.message_callback()
 async def button_handler(event: MessageCallback):
-    await load_tables()
-    button_pressed = event.callback.payload
+    send_message = pick_message_sender(event)
+
+    try:
+        await load_tables()
+    except Exception:
+        logging.exception("Ошибка загрузки таблиц при нажатии кнопки")
+        await send_message(text="⚠️ Ошибка загрузки таблиц")
+        return
+
+    button_pressed = event.callback.payload.strip()  # ty: ignore[unresolved-attribute]
     user_id = event.callback.user.user_id
-    if button_pressed in codes:
+
+    if button_pressed == NAV_BACK:
+        await searchbar_summoner(event)
+    elif button_pressed == NAV_NEXT:
+        await handle_navigation(event, user_id, "next")
+    elif button_pressed == NAV_PREV:
+        await handle_navigation(event, user_id, "prev")
+    elif button_pressed in codes:
         await serve(event, filter_by_code, button_pressed)
     elif button_pressed in names:
         await serve(event, filter_by_name, button_pressed)
-    elif button_pressed in ("next", "prev"):
-        await handle_navigation(event, user_id, button_pressed)
-    elif button_pressed == "back":
-        await searchbar_summoner(event)
     else:
         logging.log(level=logging.ERROR, msg=f"Нераспознанный ключ: {button_pressed}")
 
