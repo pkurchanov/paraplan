@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import Callable
 from datetime import date, datetime
 from typing import TypedDict
@@ -15,6 +16,8 @@ from parser import main as load_schedule
 from tokens import TOKEN
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 bot = Bot(TOKEN, format=Format.MARKDOWN)
 dp = Dispatcher()
 
@@ -54,86 +57,107 @@ codes: set[str] = set()
 names: set[str] = set()
 user_context: dict[int, Context] = {}
 
+# Индексы и преднормализованные поисковые метки
+code_index: dict[str, list[Table]] = {}
+teacher_index: dict[str, list[Table]] = {}
+search_terms: list[tuple[str, str]] = []
+schedule_loaded = False
+
+# Кэш уже собранных сообщений
+RENDER_CACHE_LIMIT = 1000
+_render_cache: OrderedDict[tuple[date, str, str, str], str] = OrderedDict()
+
 # Потенциальные улучшения:
-# - Мемоизировать уже отфильтрованные таблицы
-# - Преднормализовать поисковые метки
 # - Автоматически обновлять кэш
+# - Ограничить время жизни пользовательского контекста
+
 _load_lock = asyncio.Lock()
 
 
-async def load_tables(force: bool = False):
-    """Загружает таблицы и обновляет поисковые метки"""
-    global schedule, codes, names  # noqa: PLW0602
+def build_code_index(tables: list[Table]) -> dict[str, list[Table]]:
+    """Строит индекс расписаний по коду группы"""
+    index: dict[str, list[Table]] = {}
 
-    async with _load_lock:
-        if force or not schedule:
-            schedule = await asyncio.to_thread(load_schedule)
+    for table in tables:
+        index.setdefault(table[1], []).append(table)
 
-            codes.clear()
-            names.clear()
+    for rows in index.values():
+        rows.sort(key=lambda x: x[0], reverse=True)
 
-            codes.update(t[1] for t in schedule)
-
-            names.update(
-                name
-                for table in schedule
-                for day in table[2]
-                for lesson in day
-                if isinstance(lesson, tuple) and (name := lesson[0])
-            )
+    return index
 
 
-def filter_by_code(code: str) -> list[Table]:
-    """Фильтрует расписание по коду группы"""
-    return [table for table in schedule if table[1] == code]
-
-
-def filter_by_name(name: str) -> list[Table]:
-    """Собирает расписание по имени преподавателя"""
+def build_teacher_index(
+    tables: list[Table],
+) -> tuple[dict[str, list[Table]], set[str]]:
+    """Строит индекс расписаний по имени преподавателя"""
 
     class _AggCell(TypedDict):
         groups: list[str]
         data: FullClass | None
 
     agg: dict[str, dict[date, list[list[_AggCell]]]] = {}
-    for t_date, group_code, workweek in schedule:
+    display_names: dict[str, str] = {}
+    teacher_names: set[str] = set()
+
+    for t_date, group_code, workweek in tables:
         for day_idx, workday in enumerate(workweek):
             for slot_idx, ts in enumerate(workday):
                 if not isinstance(ts, tuple):
                     continue
+
                 # Защита от неожиданных размеров недели
                 if day_idx >= 6 or slot_idx >= 4:
                     continue
+
                 instructor = ts[0]
-                if instructor not in agg:
-                    agg[instructor] = {}
-                if t_date not in agg[instructor]:
-                    agg[instructor][t_date] = [
+                if not instructor:
+                    continue
+
+                teacher_names.add(instructor)
+                key = normalize(instructor)
+                display_names.setdefault(key, instructor)
+
+                dates_dict = agg.setdefault(key, {})
+
+                if t_date not in dates_dict:
+                    dates_dict[t_date] = [
                         [{"groups": [], "data": None} for _ in range(4)]
                         for _ in range(6)
                     ]
-                cell = agg[instructor][t_date][day_idx][slot_idx]
+
+                cell = dates_dict[t_date][day_idx][slot_idx]
                 cell["groups"].append(group_code)
+
                 if cell["data"] is None:
                     cell["data"] = ts
-    result: list[Table] = []
-    for instructor, dates_dict in agg.items():
-        if name and instructor.lower() != name.lower():
-            continue
+
+    index: dict[str, list[Table]] = {}
+
+    for key, dates_dict in agg.items():
+        instructor = display_names.get(key, key)
+        teacher_tables: list[Table] = []
+
         for t_date, workweek_structure in dates_dict.items():
             new_workweek: Workweek = []
+
             for day_idx in range(6):
                 new_workday: Workday = []
+
                 for slot_idx in range(4):
                     cell = workweek_structure[day_idx][slot_idx]
+
                     if not cell["groups"]:
                         new_workday.append(EMPTY)
                         continue
+
                     groups_str = ", ".join(sorted(set(cell["groups"])))
                     orig_data = cell["data"]
+
                     if orig_data is None:
                         new_workday.append(EMPTY)
                         continue
+
                     new_ts: FullClass = (
                         groups_str,
                         orig_data[1],
@@ -143,9 +167,74 @@ def filter_by_name(name: str) -> list[Table]:
                         orig_data[5],
                     )
                     new_workday.append(new_ts)
+
                 new_workweek.append(new_workday)
-            result.append((t_date, instructor, new_workweek))
-    return result
+
+            teacher_tables.append((t_date, instructor, new_workweek))
+
+        teacher_tables.sort(key=lambda x: x[0], reverse=True)
+        index[key] = teacher_tables
+
+    return index, teacher_names
+
+
+def build_search_terms(codes: set[str], names: set[str]) -> list[tuple[str, str]]:
+    """Преднормализует поисковые метки"""
+    terms = sorted(codes | names, key=lambda term: (term.lower(), term))
+    return [(term, normalize(term)) for term in terms]
+
+
+def find_search_matches(query: str, limit: int) -> list[str]:
+    """Ищет совпадения по преднормализованным меткам"""
+    q = normalize(query)
+
+    if not q:
+        return []
+
+    ranked: list[tuple[bool, str, str]] = []
+
+    for term, term_norm in search_terms:
+        if q in term_norm:
+            ranked.append((not term_norm.startswith(q), term.lower(), term))
+
+    ranked.sort()
+    return [term for _, _, term in ranked[:limit]]
+
+
+async def load_tables(force: bool = False):
+    """Загружает таблицы и обновляет поисковые метки"""
+    global \
+        schedule, \
+        codes, \
+        names, \
+        code_index, \
+        teacher_index, \
+        search_terms, \
+        schedule_loaded
+
+    async with _load_lock:
+        if force or not schedule_loaded:
+            schedule = await asyncio.to_thread(load_schedule)
+
+            code_index = build_code_index(schedule)
+            teacher_index, teacher_names = build_teacher_index(schedule)
+
+            codes = set(code_index.keys())
+            names = teacher_names
+            search_terms = build_search_terms(codes, names)
+
+            schedule_loaded = True
+            _render_cache.clear()
+
+
+def filter_by_code(code: str) -> list[Table]:
+    """Фильтрует расписание по коду группы"""
+    return code_index.get(code, [])
+
+
+def filter_by_name(name: str) -> list[Table]:
+    """Собирает расписание по имени преподавателя"""
+    return teacher_index.get(normalize(name), [])
 
 
 def get_sorted_tables(filtered_tables: list[Table]) -> list[Table]:
@@ -176,12 +265,15 @@ def make_header(table: Table, filter_by: FilterFunc, search_term: str) -> str:
 def make_content(workweek: Workweek) -> str:
     """Формирует текст расписания"""
     message_text = ""
+
     for day_idx, day in enumerate(workweek):
         # Защита от неожиданных размеров недели
         if day_idx >= len(DAYS_OF_WEEK):
             break
+
         message_text += DAYS_OF_WEEK[day_idx]
         day_text = ""
+
         for ts_idx, ts in enumerate(day):
             if ts == EMPTY:
                 continue
@@ -191,18 +283,23 @@ def make_content(workweek: Workweek) -> str:
             else:
                 name_or_codes = ts[0]
                 class_name, class_room, class_time = ts[1], ts[3], ts[5]
+
                 # Кликабельно если есть ссылка
                 class_form = f"[{ts[2]}]({ts[4]})" if ts[4] else ts[2]
                 number = NUMBERS[ts_idx] if ts_idx < len(NUMBERS) else ""
+
                 day_text += (
                     f" > {number} {class_name}\n"
                     + f"👤 *{name_or_codes}*\n"
                     + f"🕰️ *{class_time}*\n"
                     + f"🚪 *{class_form}, {class_room}*\n\n"
                 )
+
         if not day_text:
             day_text += " > Нет занятий\n"
+
         message_text += day_text
+
     return message_text
 
 
@@ -218,16 +315,44 @@ def make_navigation() -> InlineKeyboardBuilder:
     )
 
 
+def render_schedule_message(
+    table: Table,
+    filter_by: FilterFunc,
+    search_term: str,
+) -> str:
+    """Кэширует собранное сообщение для одной таблицы"""
+    kind = "teacher" if filter_by is filter_by_name else "group"
+    key = (table[0], table[1], kind, search_term)
+
+    cached = _render_cache.get(key)
+    if cached is not None:
+        _render_cache.move_to_end(key)
+        return cached
+
+    rendered = make_header(table, filter_by, search_term) + make_content(table[2])
+
+    _render_cache[key] = rendered
+    _render_cache.move_to_end(key)
+
+    while len(_render_cache) > RENDER_CACHE_LIMIT:
+        _render_cache.popitem(last=False)
+
+    return rendered
+
+
 async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str):
     """Оркестрирует формирование сообщения и обновление контекста"""
     send_message = pick_message_sender(event)
+
     filtered_tables = filter_by(search_term)
+
     if not filtered_tables:
         await send_message(
             text="Ничего не найдено",
             attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
         )
         return
+
     sorted_tables = get_sorted_tables(filtered_tables)
     curr_table = pick_current_table(sorted_tables)
 
@@ -242,19 +367,21 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
         curr_idx = next(i for i, t in enumerate(sorted_tables) if t[0] == curr_table[0])
     except StopIteration:
         curr_idx = 0
+
     user_id = event.callback.user.user_id
+
     user_context[user_id] = {
         "filter_by": filter_by,
         "search_term": search_term,
         "tables": sorted_tables,
         "index": curr_idx,
     }
-    navigation = make_navigation()
-    header = make_header(curr_table, filter_by, search_term)
-    content = make_content(curr_table[2])
+
+    message_text = render_schedule_message(curr_table, filter_by, search_term)
+
     await send_message(
-        text=header + content,
-        attachments=[navigation.as_markup()],
+        text=message_text,
+        attachments=[make_navigation().as_markup()],
     )
 
 
@@ -293,24 +420,22 @@ async def handle_navigation(event: MessageCallback, user_id: int, direction: str
             if direction == "next"
             else "📚 **Это самая ранняя запись в архиве** ⚠️\n\n"
         )
+
         selected_table = tables[curr_idx]
-        header = make_header(selected_table, filter_by, search_term)
-        content = make_content(selected_table[2])
+        message_text = render_schedule_message(selected_table, filter_by, search_term)
 
         await send_message(
-            text=boundary_msg + header + content,
+            text=boundary_msg + message_text,
             attachments=[make_navigation().as_markup()],
         )
         return
 
     context["index"] = new_idx
     selected_table = tables[new_idx]
-
-    header = make_header(selected_table, filter_by, search_term)
-    content = make_content(selected_table[2])
+    message_text = render_schedule_message(selected_table, filter_by, search_term)
 
     await send_message(
-        text=header + content,
+        text=message_text,
         attachments=[make_navigation().as_markup()],
     )
 
@@ -323,6 +448,7 @@ def pick_message_sender(event: MessageCreated | MessageCallback) -> Callable:
 def get_user_id(event: MessageCreated | MessageCallback) -> int:
     if type(event) is MessageCreated:
         return getattr(getattr(event.message, "user", event.message), "user_id", 0)
+
     return event.callback.user.user_id  # ty:ignore[unresolved-attribute]
 
 
@@ -340,14 +466,18 @@ async def greet(event: BotStarted):
 async def searchbar_summoner(event: MessageCreated | MessageCallback):
     send_message = pick_message_sender(event)
     user_id = get_user_id(event)
+
     try:
         await load_tables()
+
         await send_message(
             text="Напишите код группы или ФИО преподавателя",
             attachments=[],
         )
+
         if user_id not in user_context:
             user_context[user_id] = {}
+
         user_context[user_id]["listening"] = True
     except Exception:
         logging.exception("Ошибка загрузки таблиц")
@@ -358,32 +488,28 @@ async def searchbar_summoner(event: MessageCreated | MessageCallback):
 async def search_handler(event: MessageCreated):
     send_message = pick_message_sender(event)
     user_id = get_user_id(event)
+
     if user_context.get(user_id, {}).get("listening"):
         try:
             if not event.message.body:
                 raise Exception("Пустой запрос")
 
-            query = normalize(event.message.body.text)
+            matches = find_search_matches(event.message.body.text, SEARCH_RESULTS_SHOWN)  # ty: ignore[invalid-argument-type]
 
-            if not query:
-                raise Exception("Пустой запрос")
+            if not matches:
+                raise Exception("Ничего не найдено")
 
             search_results = InlineKeyboardBuilder()
-            search_results_shown = 0
-            for term in codes | names:
-                if query in normalize(term):
-                    search_results.row(CallbackButton(text=term, payload=term))
-                    search_results_shown += 1
-                    if search_results_shown == SEARCH_RESULTS_SHOWN:
-                        break
-            if search_results_shown == 0:
-                raise Exception("Ничего не найдено :(")
-            else:
-                search_results.row(SEARCH_BUTTON)
-                await send_message(
-                    text="Найдено:",
-                    attachments=[search_results.as_markup()],
-                )
+
+            for term in matches:
+                search_results.row(CallbackButton(text=term, payload=term))
+
+            search_results.row(SEARCH_BUTTON)
+
+            await send_message(
+                text="Найдено:",
+                attachments=[search_results.as_markup()],
+            )
         except Exception as e:
             await send_message(text=f"{e}\n\nПопробуйте еще раз")
         else:
@@ -394,6 +520,7 @@ async def search_handler(event: MessageCreated):
 @dp.message_created(Command("refresh"))
 async def refresh_handler(event: MessageCreated):
     send_message = pick_message_sender(event)
+
     try:
         await load_tables(force=True)
         await send_message(text="✅ Расписание обновлено")
@@ -413,7 +540,7 @@ async def button_handler(event: MessageCallback):
         await send_message(text="⚠️ Ошибка загрузки таблиц")
         return
 
-    button_pressed = event.callback.payload.strip()  # ty: ignore[unresolved-attribute]
+    button_pressed = str(event.callback.payload).strip()
     user_id = event.callback.user.user_id
 
     if button_pressed == NAV_BACK:
@@ -427,7 +554,7 @@ async def button_handler(event: MessageCallback):
     elif button_pressed in names:
         await serve(event, filter_by_name, button_pressed)
     else:
-        logging.log(level=logging.ERROR, msg=f"Нераспознанный ключ: {button_pressed}")
+        logger.error("Нераспознанный ключ: %s", button_pressed)
 
 
 async def main():

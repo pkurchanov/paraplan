@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 from python_calamine import CalamineWorkbook, SheetVisibleEnum, ZipError
 
+logger = logging.getLogger(__name__)
+
 # Между днями по 12 строк, между занятиями по 2
 DAY_OFFSET = 13
 CLASS_OFFSET = 3
@@ -28,8 +30,12 @@ type Table = tuple[date, str, Workweek]
 
 def normalize(x) -> str:
     """Чистит текстовые данные перед использованием"""
-    if type(x) is float:
+    if x is None:
+        return ""
+
+    if isinstance(x, float):
         x = int(x)
+
     return str(x).lower().strip()
 
 
@@ -136,7 +142,7 @@ def parse_all(src_dir: Path) -> list[Table]:
         try:
             book = CalamineWorkbook.from_path(file)
         except Exception:
-            logging.exception("Не удалось открыть файл: %s", file)
+            logger.exception("Не удалось открыть файл: %s", file)
             continue
 
         sheet_names = [
@@ -150,7 +156,7 @@ def parse_all(src_dir: Path) -> list[Table]:
                 sheet = book.get_sheet_by_name(sheet_name).to_python()
                 time_tables.append(parse_sheet(sheet))
             except Exception:
-                logging.exception("Пропускаем лист %s в файле %s", sheet_name, file)
+                logger.exception("Пропускаем лист %s в файле %s", sheet_name, file)
                 continue
 
     return time_tables
@@ -161,6 +167,7 @@ def main() -> list[Table]:
         src_dir = Path(__file__).resolve().parent / "raw"
     except NameError:
         src_dir = Path.cwd() / "src"
+
     try:
         return parse_all(src_dir)
     except Exception as e:
@@ -168,7 +175,7 @@ def main() -> list[Table]:
             e.add_note(
                 "Все таблицы должны быть сохранены и закрыты перед началом работы"
             )
-        logging.exception("Ошибка загрузки расписания")
+        logger.exception("Ошибка загрузки расписания")
         raise
 
 
