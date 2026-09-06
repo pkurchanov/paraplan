@@ -312,11 +312,13 @@ def make_content(workweek: Workweek) -> str:
                 # Кликабельно если есть ссылка
                 class_form = f"[{ts[2]}]({ts[4]})" if ts[4] else ts[2]
                 number = NUMBERS[ts_idx] if ts_idx < len(NUMBERS) else ""
+                # ГРЯЗНЫЙ КОСТЫЛЬ; ВПРОЧЕМ, НИЧЕГО НОВОГО
+                room_or_nothing = ", " + class_room if class_room else ""
                 day_text += (
                     f" > {number} {class_name}\n"
                     + f"👤 *{name_or_codes}*\n"
                     + f"🕰️ *{class_time}*\n"
-                    + f"🚪 *{class_form}, {class_room}*\n\n"
+                    + f"🚪 *{class_form}{room_or_nothing}*\n\n"
                 )
 
         if not day_text:
