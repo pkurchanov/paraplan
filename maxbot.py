@@ -25,10 +25,6 @@ FilterFunc = Callable[[str], list[Table]]
 
 
 class Context(TypedDict, total=False):
-    filter_by: FilterFunc
-    search_term: str
-    tables: list[Table]
-    index: int
     listening: bool
     updated_at: datetime
 
@@ -37,8 +33,6 @@ SEARCH_RESULTS_SHOWN = 5
 
 # Служебные ключи кнопок
 NAV_BACK = "nav:back"
-NAV_PREV = "nav:prev"
-NAV_NEXT = "nav:next"
 SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload=NAV_BACK)
 
 DAYS_OF_WEEK = (
@@ -329,13 +323,17 @@ def make_content(workweek: Workweek) -> str:
     return message_text
 
 
-def make_navigation() -> InlineKeyboardBuilder:
-    """Формирует клавиатуру для навигации"""
+def make_navigation(kind: str, term: str, idx: int) -> InlineKeyboardBuilder:
+    """Формирует клавиатуру для навигации с зашитым состоянием"""
     return (
         InlineKeyboardBuilder()
         .row(
-            CallbackButton(text="⬅️ Пред. неделя", payload=NAV_PREV),
-            CallbackButton(text="След. неделя ➡️", payload=NAV_NEXT),
+            CallbackButton(
+                text="⬅️ Пред. неделя", payload=f"page:{kind}:{idx + 1}:{term}"
+            ),
+            CallbackButton(
+                text="След. неделя ➡️", payload=f"page:{kind}:{idx - 1}:{term}"
+            ),
         )
         .row(SEARCH_BUTTON)
     )
@@ -366,7 +364,7 @@ def render_schedule_message(
 
 
 async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str):
-    """Оркестрирует формирование сообщения и обновление контекста"""
+    """Оркестрирует формирование сообщения"""
     send_message = pick_message_sender(event)
     filtered_tables = filter_by(search_term)
 
@@ -391,73 +389,52 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
     except StopIteration:
         curr_idx = 0
 
-    user_id = event.callback.user.user_id
-    user_context[user_id] = {
-        "filter_by": filter_by,
-        "search_term": search_term,
-        "tables": sorted_tables,
-        "index": curr_idx,
-        "updated_at": datetime.now(TZ),
-    }
-
+    kind = "c" if filter_by is filter_by_code else "t"
     message_text = render_schedule_message(curr_table, filter_by, search_term)
+
     await send_message(
         text=message_text,
-        attachments=[make_navigation().as_markup()],
+        attachments=[make_navigation(kind, search_term, curr_idx).as_markup()],
     )
 
 
-async def handle_navigation(event: MessageCallback, user_id: int, direction: str):
-    """Обрабатывает переключение недель"""
+async def handle_navigation(
+    event: MessageCallback, kind: str, new_idx: int, search_term: str
+):
+    """Обрабатывает переключение недель по данным из payload"""
     send_message = pick_message_sender(event)
-    context = user_context.get(user_id)
 
-    if not context:
+    filter_by = filter_by_code if kind == "c" else filter_by_name
+    filtered_tables = filter_by(search_term)
+    tables = get_sorted_tables(filtered_tables)
+
+    if not tables:
         await send_message(
-            text="⚠️ Сессия истекла! Начните поиск заново",
+            text="⚠️ Расписание не найдено! Начните поиск заново",
             attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
         )
         return
-
-    tables = context.get("tables", [])
-    curr_idx = context.get("index", 0)
-    filter_by = context.get("filter_by") or filter_by_code
-    search_term = context.get("search_term", "")
-
-    if not tables or curr_idx < 0 or curr_idx >= len(tables):
-        await send_message(
-            text="⚠️ Сессия истекла! Начните поиск заново",
-            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
-        )
-        return
-
-    context["updated_at"] = datetime.now(TZ)
-
-    if direction == "next":
-        new_idx = curr_idx - 1
-    else:
-        new_idx = curr_idx + 1
 
     if new_idx < 0 or new_idx >= len(tables):
         boundary_msg = (
             "⚠️ **Это последняя доступная неделя** 📚\n\n"
-            if direction == "next"
+            if new_idx < 0
             else "📚 **Это самая ранняя запись в архиве** ⚠️\n\n"
         )
-        selected_table = tables[curr_idx]
+        clamped_idx = max(0, min(new_idx, len(tables) - 1))
+        selected_table = tables[clamped_idx]
         message_text = render_schedule_message(selected_table, filter_by, search_term)
         await send_message(
             text=boundary_msg + message_text,
-            attachments=[make_navigation().as_markup()],
+            attachments=[make_navigation(kind, search_term, clamped_idx).as_markup()],
         )
         return
 
-    context["index"] = new_idx
     selected_table = tables[new_idx]
     message_text = render_schedule_message(selected_table, filter_by, search_term)
     await send_message(
         text=message_text,
-        attachments=[make_navigation().as_markup()],
+        attachments=[make_navigation(kind, search_term, new_idx).as_markup()],
     )
 
 
@@ -487,7 +464,7 @@ async def enter_search_mode(event: MessageCreated | MessageCallback):
             logger.exception("Не удалось сообщить об ошибке загрузки таблиц")
         return
 
-    # Контекст сбрасывается до вывода приглашения, чтобы старый режим навигации не мешал поиску
+    # Контекст сбрасывается до вывода приглашения
     user_context[user_id] = {
         "listening": True,
         "updated_at": datetime.now(TZ),
@@ -564,7 +541,7 @@ async def search_handler(event: MessageCreated):
             if user_id in user_context:
                 user_context[user_id]["updated_at"] = datetime.now(TZ)
     elif text:
-        await send_message(text="⚠️ Сессия истекла! Начните поиск заново: /s")
+        await send_message(text="⚠️ Сессия поиска истекла! Начните заново: /s")
 
 
 @dp.message_callback()
@@ -580,14 +557,12 @@ async def button_handler(event: MessageCallback):
         return
 
     button_pressed = str(event.callback.payload).strip()
-    user_id = event.callback.user.user_id
 
     if button_pressed == NAV_BACK:
         await enter_search_mode(event)
-    elif button_pressed == NAV_NEXT:
-        await handle_navigation(event, user_id, "next")
-    elif button_pressed == NAV_PREV:
-        await handle_navigation(event, user_id, "prev")
+    elif button_pressed.startswith("page:"):
+        _, kind, str_idx, term = button_pressed.split(":", 3)
+        await handle_navigation(event, kind, int(str_idx), term)
     elif button_pressed in codes:
         await serve(event, filter_by_code, button_pressed)
     elif button_pressed in names:
