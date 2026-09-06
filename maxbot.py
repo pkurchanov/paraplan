@@ -285,15 +285,12 @@ def make_header(table: Table, filter_by: FilterFunc, search_term: str) -> str:
 def make_content(workweek: Workweek) -> str:
     """Формирует текст расписания"""
     message_text = ""
-
     for day_idx, day in enumerate(workweek):
         # Защита от неожиданных размеров недели
         if day_idx >= len(DAYS_OF_WEEK):
             break
-
         message_text += DAYS_OF_WEEK[day_idx]
         day_text = ""
-
         for ts_idx, ts in enumerate(day):
             if ts == EMPTY:
                 continue
@@ -301,25 +298,35 @@ def make_content(workweek: Workweek) -> str:
                 day_text += " > Выходной день\n"
                 break
             else:
-                name_or_codes = ts[0]
-                class_name, class_room, class_time = ts[1], ts[3], ts[5]
-                # Кликабельно если есть ссылка
-                class_form = f"[{ts[2]}]({ts[4]})" if ts[4] else ts[2]
-                number = NUMBERS[ts_idx] if ts_idx < len(NUMBERS) else ""
-                # ГРЯЗНЫЙ КОСТЫЛЬ; ВПРОЧЕМ, НИЧЕГО НОВОГО
-                room_or_nothing = ", " + class_room if class_room else ""
-                day_text += (
-                    f" > {number} {class_name}\n"
-                    + f"👤 *{name_or_codes}*\n"
-                    + f"🕰️ *{class_time}*\n"
-                    + f"🚪 *{class_form}{room_or_nothing}*\n\n"
+                name_or_codes, class_name, form_type, class_room, link, class_time = (
+                    ts[0],
+                    ts[1],
+                    ts[2],
+                    ts[3],
+                    ts[4],
+                    ts[5],
                 )
-
+                number = NUMBERS[ts_idx] if ts_idx < len(NUMBERS) else ""
+                header = f" > {number} {class_name}".rstrip()
+                teacher_line = f"👤 *{name_or_codes}*" if name_or_codes else ""
+                time_line = f"🕰️ *{class_time}*" if class_time else ""
+                class_form = (
+                    f"[{form_type}]({link})"
+                    if (form_type and link)
+                    else (form_type or "")
+                )
+                room_and_form = ", ".join(filter(None, [class_form, class_room]))
+                room_line = f"🚪 *{room_and_form}*" if room_and_form else ""
+                slot_lines = [
+                    line
+                    for line in (header, teacher_line, time_line, room_line)
+                    if line
+                ]
+                if slot_lines:
+                    day_text += "\n".join(slot_lines) + "\n\n"
         if not day_text:
             day_text += " > Нет занятий\n"
-
         message_text += day_text
-
     return message_text
 
 
