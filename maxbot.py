@@ -447,8 +447,10 @@ def pick_message_sender(event: MessageCreated | MessageCallback) -> Callable:
 
 def get_user_id(event: MessageCreated | MessageCallback) -> int:
     if type(event) is MessageCreated:
-        return getattr(getattr(event.message, "user", event.message), "user_id", 0)
-    return event.callback.user.user_id  # ty:ignore[unresolved-attribute]
+        uid = getattr(getattr(event.message, "user", event.message), "user_id", 0)
+    else:
+        uid = event.callback.user.user_id  # ty:ignore[unresolved-attribute]
+    return int(uid) if uid else 0
 
 
 async def enter_search_mode(event: MessageCreated | MessageCallback):
