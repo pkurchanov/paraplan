@@ -5,6 +5,7 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import TypedDict
 
+from dotenv import load_dotenv
 from maxapi import Bot, Dispatcher
 from maxapi.enums import Format
 from maxapi.types import BotStarted, Command, MessageCallback, MessageCreated
@@ -13,12 +14,13 @@ from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
 from parser import DAY_OFF, EMPTY, TZ, FullClass, Table, Workday, Workweek, normalize
 from parser import main as load_schedule
-from tokens import TOKEN
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-bot = Bot(TOKEN, format=Format.MARKDOWN)
+load_dotenv()
+
+bot = Bot(format=Format.MARKDOWN)
 dp = Dispatcher()
 
 FilterFunc = Callable[[str], list[Table]]
@@ -30,11 +32,8 @@ class Context(TypedDict, total=False):
 
 
 SEARCH_RESULTS_SHOWN = 5
-
-# Служебные ключи кнопок
 NAV_BACK = "nav:back"
 SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload=NAV_BACK)
-
 DAYS_OF_WEEK = (
     "# ☕️ Понедельник\n ",
     "# 📈 Вторник\n ",
@@ -56,11 +55,9 @@ teacher_index: dict[str, list[Table]] = {}
 search_terms: list[tuple[str, str]] = []
 schedule_loaded = False
 
-# Кэш уже собранных сообщений
 RENDER_CACHE_LIMIT = 1000
 _render_cache: OrderedDict[tuple[date, str, str, str], str] = OrderedDict()
 
-# Автоматически обновляем кэш и ограничиваем время жизни пользовательского контекста
 SCHEDULE_REFRESH_SECONDS = 30 * 60
 USER_CONTEXT_TTL_SECONDS = 30 * 60
 USER_CONTEXT_CLEANUP_SECONDS = 60
@@ -96,7 +93,6 @@ def build_teacher_index(
             for slot_idx, ts in enumerate(workday):
                 if not isinstance(ts, tuple):
                     continue
-                # Защита от неожиданных размеров недели
                 if day_idx >= 6 or slot_idx >= 4:
                     continue
 
@@ -167,7 +163,7 @@ def build_search_terms(codes: set[str], names: set[str]) -> list[tuple[str, str]
 
 
 def find_search_matches(query: str, limit: int) -> list[str]:
-    """Ищет совпадения по преднормализованным меткам"""
+    """Ищет совпадения по меткам"""
     q = normalize(query)
     if not q:
         return []
@@ -286,7 +282,6 @@ def make_content(workweek: Workweek) -> str:
     """Формирует текст расписания"""
     message_text = ""
     for day_idx, day in enumerate(workweek):
-        # Защита от неожиданных размеров недели
         if day_idx >= len(DAYS_OF_WEEK):
             break
         message_text += DAYS_OF_WEEK[day_idx]
@@ -498,7 +493,7 @@ async def greet(event: BotStarted):
     await bot.send_message(
         chat_id=event.chat_id,
         text="Используйте команду\n"
-        + "> /s(earch)\n\nдля поиска по группе или по имени преподавателя\n",
+        + "> /search\n\nдля поиска по группе или по имени преподавателя\n",
     )
 
 
@@ -548,7 +543,7 @@ async def search_handler(event: MessageCreated):
             if user_id in user_context:
                 user_context[user_id]["updated_at"] = datetime.now(TZ)
     elif text:
-        await send_message(text="⚠️ Сессия поиска истекла! Начните заново: /s")
+        await send_message(text="⚠️ Сессия поиска истекла! Начните заново: /search")
 
 
 @dp.message_callback()
