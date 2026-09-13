@@ -32,8 +32,8 @@ class Context(TypedDict, total=False):
 
 
 SEARCH_RESULTS_SHOWN = 5
-NAV_BACK = "nav:back"
-SEARCH_BUTTON = CallbackButton(text="🔍 Назад в поиск", payload=NAV_BACK)
+NAV_SEARCH = "nav:search"
+SEARCH_BUTTON = CallbackButton(text="🔍 К поиску", payload=NAV_SEARCH)
 DAYS_OF_WEEK = (
     "# ☕️ Понедельник\n ",
     "# 📈 Вторник\n ",
@@ -168,13 +168,15 @@ def find_search_matches(query: str, limit: int) -> list[str]:
     if not q:
         return []
 
-    ranked: list[tuple[bool, str, str]] = []
+    ranked: list[tuple[bool, bool, str, str]] = []
     for term, term_norm in search_terms:
         if q in term_norm:
-            ranked.append((not term_norm.startswith(q), term.lower(), term))
+            ranked.append(
+                (term_norm != q, not term_norm.startswith(q), term.lower(), term)
+            )
 
     ranked.sort()
-    return [term for _, _, term in ranked[:limit]]
+    return [term for _, _, _, term in ranked[:limit]]
 
 
 async def load_tables(force: bool = False):
@@ -449,7 +451,12 @@ def get_user_id(event: MessageCreated | MessageCallback) -> int:
     if type(event) is MessageCreated:
         uid = getattr(getattr(event.message, "user", event.message), "user_id", 0)
     else:
-        uid = event.callback.user.user_id  # ty:ignore[unresolved-attribute]
+        cb = getattr(event, "callback", event)
+        uid = getattr(
+            getattr(cb, "user", cb),
+            "user_id",
+            getattr(cb, "user_id", getattr(event, "user_id", 0)),
+        )
     return int(uid) if uid else 0
 
 
@@ -468,7 +475,6 @@ async def enter_search_mode(event: MessageCreated | MessageCallback):
             logger.exception("Не удалось сообщить об ошибке загрузки таблиц")
         return
 
-    # Контекст сбрасывается до вывода приглашения
     user_context[user_id] = {
         "listening": True,
         "updated_at": datetime.now(TZ),
@@ -481,7 +487,6 @@ async def enter_search_mode(event: MessageCreated | MessageCallback):
         )
     except Exception:
         logger.exception("Не удалось показать приглашение поиска")
-        # Если редактирование не сработало, пробуем отправить обычное сообщение
         fallback_send = getattr(event.message, "answer", None)
         if fallback_send is not None:
             try:
@@ -494,8 +499,9 @@ async def enter_search_mode(event: MessageCreated | MessageCallback):
 async def greet(event: BotStarted):
     await bot.send_message(
         chat_id=event.chat_id,
-        text="Используйте команду\n"
+        text="Нажмите кнопку ниже или используйте команду\n"
         + "> /search\n\nдля поиска по группе или по имени преподавателя\n",
+        attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
     )
 
 
@@ -537,15 +543,18 @@ async def search_handler(event: MessageCreated):
                 attachments=[search_results.as_markup()],
             )
         except Exception as e:
-            await send_message(text=f"{e}\n\nПопробуйте еще раз")
-        else:
-            if user_id in user_context:
-                user_context[user_id]["listening"] = False
+            await send_message(
+                text=f"{e}\n\nПопробуйте еще раз",
+                attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+            )
         finally:
             if user_id in user_context:
                 user_context[user_id]["updated_at"] = datetime.now(TZ)
     elif text:
-        await send_message(text="⚠️ Сессия поиска истекла! Начните заново: /search")
+        await send_message(
+            text="⚠️ Сессия поиска истекла! Начните заново:",
+            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+        )
 
 
 @dp.message_callback()
@@ -562,7 +571,7 @@ async def button_handler(event: MessageCallback):
 
     button_pressed = str(event.callback.payload).strip()
 
-    if button_pressed == NAV_BACK:
+    if button_pressed == NAV_SEARCH:
         await enter_search_mode(event)
     elif button_pressed.startswith("page:"):
         _, kind, str_idx, term = button_pressed.split(":", 3)

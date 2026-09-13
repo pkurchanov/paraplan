@@ -13,4 +13,5 @@ wheels/
 .env
 
 # Raw material
-raw/
+raw/*
+!raw/spec.md
