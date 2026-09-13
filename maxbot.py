@@ -505,9 +505,9 @@ async def enter_search_mode(event: MessageCreated | MessageCallback):
 async def greet(event: BotStarted):
     await bot.send_message(
         chat_id=event.chat_id,
-        text="Нажмите кнопку ниже или используйте команду\n"
+        text="Используйте команду\n"
         + "> /search\n\nдля поиска по группе или по имени преподавателя\n",
-        attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+        attachments=[],
     )
 
 
