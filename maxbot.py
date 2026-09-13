@@ -49,7 +49,6 @@ codes: set[str] = set()
 names: set[str] = set()
 user_context: dict[int, Context] = {}
 
-# Индексы и преднормализованные поисковые метки
 code_index: dict[str, list[Table]] = {}
 teacher_index: dict[str, list[Table]] = {}
 search_terms: list[tuple[str, str]] = []
@@ -195,8 +194,8 @@ async def load_tables(force: bool = False):
             schedule = await asyncio.to_thread(load_schedule)
             code_index = build_code_index(schedule)
             teacher_index, teacher_names = build_teacher_index(schedule)
-            codes = set(code_index.keys())
-            names = teacher_names
+            codes = {c for c in code_index if c and not c[0].isdigit()}
+            names = {n for n in teacher_names if n and not n[0].isdigit()}
             search_terms = build_search_terms(codes, names)
             schedule_loaded = True
             _render_cache.clear()
@@ -448,15 +447,22 @@ def pick_message_sender(event: MessageCreated | MessageCallback) -> Callable:
 
 
 def get_user_id(event: MessageCreated | MessageCallback) -> int:
-    if type(event) is MessageCreated:
-        uid = getattr(getattr(event.message, "user", event.message), "user_id", 0)
+    """Извлекает ID пользователя"""
+    if isinstance(event, MessageCreated):
+        msg = getattr(event, "message", event)
+        uid = getattr(getattr(msg, "user", msg), "user_id", 0)
     else:
         cb = getattr(event, "callback", event)
-        uid = getattr(
-            getattr(cb, "user", cb),
-            "user_id",
-            getattr(cb, "user_id", getattr(event, "user_id", 0)),
-        )
+        msg = getattr(event, "message", None)
+        uid = getattr(cb, "user_id", 0)
+        if not uid:
+            uid = getattr(getattr(cb, "user", None), "user_id", 0)
+        if not uid and msg:
+            uid = getattr(msg, "user_id", 0)
+        if not uid and msg:
+            uid = getattr(getattr(msg, "user", None), "user_id", 0)
+        if not uid:
+            uid = getattr(event, "user_id", 0)
     return int(uid) if uid else 0
 
 
