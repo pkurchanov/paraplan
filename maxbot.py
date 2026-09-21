@@ -276,7 +276,7 @@ async def maintenance_loop():
 def make_header(table: Table, filter_by: FilterFunc, search_term: str) -> str:
     """Формирует заголовок расписания"""
     entity_type = "преподавателя" if filter_by is filter_by_name else "группы"
-    return f"Расписание на {table[0]} для {entity_type} {search_term}:\n"
+    return f"Расписание с {table[0]} для {entity_type} {search_term}:\n"
 
 
 def make_content(workweek: Workweek) -> str:
@@ -420,15 +420,15 @@ async def handle_navigation(
 
     if new_idx < 0 or new_idx >= len(tables):
         boundary_msg = (
-            "⚠️ **Это последняя доступная неделя** 📚\n\n"
+            "\n⚠️ **Это последняя доступная неделя** 📚"
             if new_idx < 0
-            else "📚 **Это самая ранняя запись в архиве** ⚠️\n\n"
+            else "\n📚 **Это самая ранняя запись в архиве** ⚠️"
         )
         clamped_idx = max(0, min(new_idx, len(tables) - 1))
         selected_table = tables[clamped_idx]
         message_text = render_schedule_message(selected_table, filter_by, search_term)
         await send_message(
-            text=boundary_msg + message_text,
+            text=message_text + boundary_msg,
             attachments=[make_navigation(kind, search_term, clamped_idx).as_markup()],
         )
         return
