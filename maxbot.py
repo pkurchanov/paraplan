@@ -249,8 +249,8 @@ def make_content(workweek: Workweek, start_date: date) -> str:
                 number = NUMBERS[ts_idx] if ts_idx < len(NUMBERS) else ""
 
                 header = f" > {number} {class_name}"
-                teacher_line = f"👤 {name_or_codes}" if name_or_codes else ""
-                time_line = f"🕰️ {class_time}" if class_time else ""
+                teacher_line = f"👤 *{name_or_codes}*" if name_or_codes else ""
+                time_line = f"🕰️ *{class_time}*" if class_time else ""
                 class_room = f"**{classroom}**" if classroom else ""
                 class_form = (
                     f"[{form_type}]({link})"
