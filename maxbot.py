@@ -21,15 +21,9 @@ load_dotenv()
 
 bot = Bot(format=Format.MARKDOWN)
 dp = Dispatcher()
-
 FilterFunc = Callable[[str], list[Table]]
 
-
-class Context(TypedDict, total=False):
-    listening: bool
-    updated_at: datetime
-
-
+# --- Constants ---
 SEARCH_RESULTS_SHOWN = 5
 NAV_SEARCH = "nav:search"
 SEARCH_BUTTON = CallbackButton(text="🔍 К поиску", payload=NAV_SEARCH)
@@ -44,10 +38,10 @@ DAYS_OF_WEEK = (
 )
 NUMBERS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣")
 
+# --- Global State ---
 schedule: list[Table] = []
 codes: set[str] = set()
 names: set[str] = set()
-user_context: dict[int, Context] = {}
 code_index: dict[str, list[Table]] = {}
 teacher_index: dict[str, list[Table]] = {}
 search_terms: list[tuple[str, str]] = []
@@ -57,8 +51,6 @@ RENDER_CACHE_LIMIT = 1000
 _render_cache: OrderedDict[tuple[date, str, str, str], str] = OrderedDict()
 
 SCHEDULE_REFRESH_SECONDS = 30 * 60
-USER_CONTEXT_TTL_SECONDS = 30 * 60
-USER_CONTEXT_CLEANUP_SECONDS = 60
 _load_lock = asyncio.Lock()
 
 
@@ -72,9 +64,7 @@ def build_code_index(tables: list[Table]) -> dict[str, list[Table]]:
     return index
 
 
-def build_teacher_index(
-    tables: list[Table],
-) -> tuple[dict[str, list[Table]], set[str]]:
+def build_teacher_index(tables: list[Table]) -> tuple[dict[str, list[Table]], set[str]]:
     """Строит индекс расписаний по имени преподавателя"""
 
     class _AggCell(TypedDict):
@@ -117,6 +107,7 @@ def build_teacher_index(
     for key, dates_dict in agg.items():
         instructor = display_names.get(key, key)
         teacher_tables: list[Table] = []
+
         for t_date, workweek_structure in dates_dict.items():
             new_workweek: Workweek = []
             for day_idx in range(6):
@@ -169,7 +160,6 @@ def find_search_matches(query: str, limit: int) -> list[str]:
             ranked.append(
                 (term_norm != q, not term_norm.startswith(q), term.lower(), term)
             )
-
     ranked.sort()
     return [term for _, _, _, term in ranked[:limit]]
 
@@ -184,7 +174,6 @@ async def load_tables(force: bool = False):
         teacher_index, \
         search_terms, \
         schedule_loaded
-
     async with _load_lock:
         if force or not schedule_loaded:
             schedule = await asyncio.to_thread(load_schedule)
@@ -213,9 +202,8 @@ def get_sorted_tables(filtered_tables: list[Table]) -> list[Table]:
 
 
 def pick_current_table(tables: list[Table]) -> Table | None:
-    """Выбирает позднейшую из недель, начавшихся не позже сегодняшнего дня (сдвиг на день назад для воскресенья)"""
+    """Выбирает позднейшую из недель, начавшихся не позже сегодняшнего дня"""
     curr_date = datetime.now(TZ).date()
-    # Сдвигаем дату начала недели на день назад, чтобы в воскресенье показывать следующую неделю
     eligible = [t for t in tables if (t[0] - timedelta(days=1)) <= curr_date]
     if eligible:
         return max(eligible, key=lambda x: x[0])
@@ -224,53 +212,20 @@ def pick_current_table(tables: list[Table]) -> Table | None:
     return None
 
 
-def touch_user_context(user_id: int):
-    """Продлевает время жизни пользовательского контекста"""
-    context = user_context.get(user_id)
-    if context is not None:
-        context["updated_at"] = datetime.now(TZ)
-
-
-def prune_expired_user_contexts():
-    """Удаляет пользовательские контексты с истёкшим временем жизни"""
-    now = datetime.now(TZ)
-    expired_user_ids = []
-    for user_id, context in user_context.items():
-        updated_at = context.get("updated_at")
-        if (
-            updated_at is None
-            or (now - updated_at).total_seconds() > USER_CONTEXT_TTL_SECONDS
-        ):
-            expired_user_ids.append(user_id)
-
-    for user_id in expired_user_ids:
-        user_context.pop(user_id, None)
-
-
 async def maintenance_loop():
-    """Фоновая служба: автоматически обновляет кэш и чистит устаревшие контексты"""
-    refresh_elapsed = 0
+    """Фоновая служба: автоматически обновляет кэш расписания"""
     while True:
-        await asyncio.sleep(USER_CONTEXT_CLEANUP_SECONDS)
+        await asyncio.sleep(SCHEDULE_REFRESH_SECONDS)
         try:
-            prune_expired_user_contexts()
+            await load_tables(force=True)
         except Exception:
-            logger.exception("Ошибка очистки пользовательских контекстов")
-
-        refresh_elapsed += USER_CONTEXT_CLEANUP_SECONDS
-        if refresh_elapsed >= SCHEDULE_REFRESH_SECONDS:
-            try:
-                await load_tables(force=True)
-                refresh_elapsed = 0
-            except Exception:
-                logger.exception("Ошибка автоматического обновления таблиц")
-                # Не сбрасываем счётчик, чтобы повторить попытку на следующем цикле
+            logger.exception("Ошибка автоматического обновления таблиц")
 
 
 def make_header(table: Table, filter_by: FilterFunc, search_term: str) -> str:
     """Формирует заголовок расписания"""
-    entity_type = "преподавателя" if filter_by is filter_by_name else "группы"
-    date_str = table[0].strftime("%d.%m.%Y")
+    entity_type = "преподавателя " if filter_by is filter_by_name else "группы "
+    date_str = table[0].strftime("%d.%m.%Y ")
     return f"Расписание с {date_str} для {entity_type} {search_term}\n"
 
 
@@ -284,8 +239,8 @@ def make_content(workweek: Workweek, start_date: date) -> str:
         current_date = start_date + timedelta(days=day_idx)
         date_str = current_date.strftime("%d.%m")
         message_text += f"{DAYS_OF_WEEK[day_idx]} {date_str}\n"
-
         day_text = ""
+
         for ts_idx, ts in enumerate(day):
             if ts == EMPTY:
                 continue
@@ -293,25 +248,19 @@ def make_content(workweek: Workweek, start_date: date) -> str:
                 day_text += " > Выходной день\n"
                 break
             else:
-                name_or_codes, class_name, form_type, classroom, link, class_time = (
-                    ts[0],
-                    ts[1],
-                    ts[2],
-                    ts[3],
-                    ts[4],
-                    ts[5],
-                )
+                name_or_codes, class_name, form_type, classroom, link, class_time = ts
                 number = NUMBERS[ts_idx] if ts_idx < len(NUMBERS) else ""
+
                 header = f" > {number} {class_name}"
                 teacher_line = f"👤 {name_or_codes}" if name_or_codes else ""
                 time_line = f"🕰️ {class_time}" if class_time else ""
-
                 class_room = f"**{classroom}**" if classroom else ""
                 class_form = (
                     f"[{form_type}]({link})"
                     if (form_type and link)
                     else (form_type or "")
                 )
+
                 room_and_form = ", ".join(filter(None, [class_form, class_room]))
                 room_line = f"🚪 {room_and_form}" if room_and_form else ""
 
@@ -331,15 +280,15 @@ def make_content(workweek: Workweek, start_date: date) -> str:
 
 
 def make_navigation(kind: str, term: str, idx: int) -> InlineKeyboardBuilder:
-    """Формирует клавиатуру для навигации с зашитым состоянием"""
+    """Формирует клавиатуру для навигации"""
     return (
         InlineKeyboardBuilder()
         .row(
             CallbackButton(
-                text="⬅️ Пред. неделя ", payload=f"page:{kind}:{idx + 1}:{term}"
+                text="⬅️ Пред. неделя  ", payload=f"page:{kind}:{idx + 1}:{term}"
             ),
             CallbackButton(
-                text="След. неделя ➡️ ", payload=f"page:{kind}:{idx - 1}:{term}"
+                text="След. неделя ➡️  ", payload=f"page:{kind}:{idx - 1}:{term}"
             ),
         )
         .row(SEARCH_BUTTON)
@@ -347,13 +296,12 @@ def make_navigation(kind: str, term: str, idx: int) -> InlineKeyboardBuilder:
 
 
 def render_schedule_message(
-    table: Table,
-    filter_by: FilterFunc,
-    search_term: str,
+    table: Table, filter_by: FilterFunc, search_term: str
 ) -> str:
     """Кэширует собранное сообщение для одной таблицы"""
     kind = "teacher" if filter_by is filter_by_name else "group"
     key = (table[0], table[1], kind, search_term)
+
     cached = _render_cache.get(key)
     if cached is not None:
         _render_cache.move_to_end(key)
@@ -362,11 +310,12 @@ def render_schedule_message(
     rendered = make_header(table, filter_by, search_term) + make_content(
         table[2], table[0]
     )
-
     _render_cache[key] = rendered
     _render_cache.move_to_end(key)
+
     while len(_render_cache) > RENDER_CACHE_LIMIT:
         _render_cache.popitem(last=False)
+
     return rendered
 
 
@@ -374,6 +323,7 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
     """Оркестрирует формирование сообщения"""
     send_message = pick_message_sender(event)
     filtered_tables = filter_by(search_term)
+
     if not filtered_tables:
         await send_message(
             text="Ничего не найдено",
@@ -383,6 +333,7 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
 
     sorted_tables = get_sorted_tables(filtered_tables)
     curr_table = pick_current_table(sorted_tables)
+
     if curr_table is None:
         await send_message(
             text="Ничего не найдено",
@@ -397,6 +348,7 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
 
     kind = "c" if filter_by is filter_by_code else "t"
     message_text = render_schedule_message(curr_table, filter_by, search_term)
+
     await send_message(
         text=message_text,
         attachments=[make_navigation(kind, search_term, curr_idx).as_markup()],
@@ -428,6 +380,7 @@ async def handle_navigation(
         clamped_idx = max(0, min(new_idx, len(tables) - 1))
         selected_table = tables[clamped_idx]
         message_text = render_schedule_message(selected_table, filter_by, search_term)
+
         await send_message(
             text=message_text + boundary_msg,
             attachments=[make_navigation(kind, search_term, clamped_idx).as_markup()],
@@ -436,6 +389,7 @@ async def handle_navigation(
 
     selected_table = tables[new_idx]
     message_text = render_schedule_message(selected_table, filter_by, search_term)
+
     await send_message(
         text=message_text,
         attachments=[make_navigation(kind, search_term, new_idx).as_markup()],
@@ -444,125 +398,67 @@ async def handle_navigation(
 
 def pick_message_sender(event: MessageCreated | MessageCallback) -> Callable:
     """Решает между редактированием и отправкой нового сообщения смотря откуда вызван"""
-    return event.message.answer if type(event) is MessageCreated else event.message.edit  # ty:ignore[unresolved-attribute]
+    return event.message.answer if type(event) is MessageCreated else event.message.edit  # ty: ignore[unresolved-attribute]
 
 
-def get_user_id(event: MessageCreated | MessageCallback) -> int:
-    """Извлекает ID пользователя"""
-    if isinstance(event, MessageCreated):
-        msg = getattr(event, "message", event)
-        uid = getattr(getattr(msg, "user", msg), "user_id", 0)
-    else:
-        cb = getattr(event, "callback", event)
-        msg = getattr(event, "message", None)
-        uid = getattr(cb, "user_id", 0)
-        if not uid:
-            uid = getattr(getattr(cb, "user", None), "user_id", 0)
-        if not uid and msg:
-            uid = getattr(msg, "user_id", 0)
-        if not uid and msg:
-            uid = getattr(getattr(msg, "user", None), "user_id", 0)
-        if not uid:
-            uid = getattr(event, "user_id", 0)
-    return int(uid) if uid else 0
-
-
-async def enter_search_mode(event: MessageCreated | MessageCallback):
-    """Включает режим поиска и сбрасывает устаревший пользовательский контекст"""
-    user_id = get_user_id(event)
-    send_message = pick_message_sender(event)
-    try:
-        await load_tables()
-    except Exception:
-        logger.exception("Ошибка загрузки таблиц при активации поиска")
-        try:
-            await send_message(text="⚠️ Ошибка загрузки таблиц")
-        except Exception:
-            logger.exception("Не удалось сообщить об ошибке загрузки таблиц")
-        return
-
-    user_context[user_id] = {
-        "listening": True,
-        "updated_at": datetime.now(TZ),
-    }
-    try:
-        await send_message(
-            text="Напишите код группы или ФИО преподавателя",
-            attachments=[],
-        )
-    except Exception:
-        logger.exception("Не удалось показать приглашение поиска")
-        fallback_send = getattr(event.message, "answer", None)
-        if fallback_send is not None:
-            try:
-                await fallback_send(text="Напишите код группы или ФИО преподавателя")
-            except Exception:
-                logger.exception("Не удалось отправить приглашение поиска")
-
-
+# --- Handlers ---
 @dp.bot_started()
-async def greet(event: BotStarted):
-    await bot.send_message(
-        chat_id=event.chat_id,
-        text="Используйте команду\n"
-        + "> /search\n\nдля поиска по группе или по имени преподавателя\n",
-        attachments=[],
+@dp.message_created(Command(["start", "help", "s", "h"]))
+async def help_handler(event: BotStarted | MessageCreated):
+    """Приветствует пользователя."""
+    text = (
+        "👋 Привет!\n\n"
+        "Просто отправь мне в чат код группы или ФИО преподавателя, "
+        "и я покажу расписание.\n\n"
+        "Например: *ЛФ24-01БИС* или *Фирер А.В.*"
     )
 
-
-@dp.message_created(Command(["search", "s"]))
-async def searchbar_summoner(event: MessageCreated | MessageCallback):
-    await enter_search_mode(event)
+    if isinstance(event, BotStarted):
+        await bot.send_message(chat_id=event.chat_id, text=text, attachments=[])
+    else:
+        await event.message.answer(text=text, attachments=[])
 
 
 @dp.message_created()
-async def search_handler(event: MessageCreated):
-    prune_expired_user_contexts()
-    send_message = pick_message_sender(event)
-    user_id = get_user_id(event)
+async def text_search_handler(event: MessageCreated):
+    """Любое текстовое сообщение мгновенно ищется в базе."""
     text = event.message.body.text if event.message.body else ""
 
-    # Служебные команды обрабатываются отдельными хендлерами
-    if text.startswith("/"):  # ty: ignore[unresolved-attribute]
+    # Игнорируем команды, они обрабатываются выше
+    if not text or text.startswith("/"):
         return
 
-    context = user_context.get(user_id, {})
-    if context.get("listening"):
-        try:
-            if not text:
-                raise Exception("Пустой запрос")
-            matches = find_search_matches(text, SEARCH_RESULTS_SHOWN)  # ty: ignore[invalid-argument-type]
-            if not matches:
-                raise Exception("Ничего не найдено")
+    try:
+        await load_tables()
+    except Exception:
+        logger.exception("Ошибка загрузки таблиц при поиске")
+        await event.message.answer(text="⚠️ Ошибка загрузки таблиц", attachments=[])
+        return
 
-            search_results = InlineKeyboardBuilder()
-            for term in matches:
-                search_results.row(CallbackButton(text=term, payload=term))
-            search_results.row(SEARCH_BUTTON)
+    matches = find_search_matches(text, SEARCH_RESULTS_SHOWN)
 
-            await send_message(
-                text="Найдено:",
-                attachments=[search_results.as_markup()],
-            )
-        except Exception as e:
-            await send_message(
-                text=f"{e}\n\nПопробуйте еще раз",
-                attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
-            )
-        finally:
-            if user_id in user_context:
-                user_context[user_id]["updated_at"] = datetime.now(TZ)
-    elif text:
-        await send_message(
-            text="⚠️ Сессия поиска истекла! Начните заново:",
+    if not matches:
+        await event.message.answer(
+            text="🔍 Ничего не найдено.\nУбедитесь, что пишете код группы или ФИО.",
             attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
         )
+        return
+
+    search_results = InlineKeyboardBuilder()
+    for term in matches:
+        search_results.row(CallbackButton(text=term, payload=term))
+    search_results.row(SEARCH_BUTTON)
+
+    await event.message.answer(
+        text="Найдено:",
+        attachments=[search_results.as_markup()],
+    )
 
 
 @dp.message_callback()
 async def button_handler(event: MessageCallback):
-    prune_expired_user_contexts()
     send_message = pick_message_sender(event)
+
     try:
         await load_tables()
     except Exception:
@@ -571,9 +467,15 @@ async def button_handler(event: MessageCallback):
         return
 
     button_pressed = str(event.callback.payload).strip()
+
     if button_pressed == NAV_SEARCH:
-        await enter_search_mode(event)
-    elif button_pressed.startswith("page:"):
+        await send_message(
+            text="🔍 **Режим поиска**\n\nОтправьте мне код группы или ФИО преподавателя текстом.",
+            attachments=[],
+        )
+        return
+
+    if button_pressed.startswith("page:"):
         _, kind, str_idx, term = button_pressed.split(":", 3)
         await handle_navigation(event, kind, int(str_idx), term)
     elif button_pressed in codes:
