@@ -221,8 +221,8 @@ async def maintenance_loop():
 
 def make_header(table: Table, filter_by: FilterFunc, search_term: str) -> str:
     """Формирует заголовок расписания"""
-    entity_type = "преподавателя " if filter_by is filter_by_name else "группы "
-    date_str = table[0].strftime("%d.%m.%Y ")
+    entity_type = "преподавателя" if filter_by is filter_by_name else "группы"
+    date_str = table[0].strftime("%d.%m.%Y")
     return f"Расписание с {date_str} для {entity_type} {search_term}\n"
 
 
