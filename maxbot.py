@@ -25,9 +25,6 @@ FilterFunc = Callable[[str], list[Table]]
 
 # --- Constants ---
 SEARCH_RESULTS_SHOWN = 5
-NAV_SEARCH = "nav:search"
-SEARCH_BUTTON = CallbackButton(text="🔍 К поиску", payload=NAV_SEARCH)
-
 DAYS_OF_WEEK = (
     "# ☕️ Понедельник",
     "# 📈 Вторник",
@@ -281,17 +278,13 @@ def make_content(workweek: Workweek, start_date: date) -> str:
 
 def make_navigation(kind: str, term: str, idx: int) -> InlineKeyboardBuilder:
     """Формирует клавиатуру для навигации"""
-    return (
-        InlineKeyboardBuilder()
-        .row(
-            CallbackButton(
-                text="⬅️ Пред. неделя  ", payload=f"page:{kind}:{idx + 1}:{term}"
-            ),
-            CallbackButton(
-                text="След. неделя ➡️  ", payload=f"page:{kind}:{idx - 1}:{term}"
-            ),
-        )
-        .row(SEARCH_BUTTON)
+    return InlineKeyboardBuilder().row(
+        CallbackButton(
+            text="⬅️ Пред. неделя  ", payload=f"page:{kind}:{idx + 1}:{term}"
+        ),
+        CallbackButton(
+            text="След. неделя ➡️  ", payload=f"page:{kind}:{idx - 1}:{term}"
+        ),
     )
 
 
@@ -327,7 +320,7 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
     if not filtered_tables:
         await send_message(
             text="Ничего не найдено",
-            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+            attachments=[InlineKeyboardBuilder().as_markup()],
         )
         return
 
@@ -337,7 +330,7 @@ async def serve(event: MessageCallback, filter_by: FilterFunc, search_term: str)
     if curr_table is None:
         await send_message(
             text="Ничего не найдено",
-            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+            attachments=[InlineKeyboardBuilder().as_markup()],
         )
         return
 
@@ -367,7 +360,7 @@ async def handle_navigation(
     if not tables:
         await send_message(
             text="⚠️ Расписание не найдено! Начните поиск заново",
-            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+            attachments=[InlineKeyboardBuilder().as_markup()],
         )
         return
 
@@ -440,14 +433,13 @@ async def text_search_handler(event: MessageCreated):
     if not matches:
         await event.message.answer(
             text="🔍 Ничего не найдено.\nУбедитесь, что пишете код группы или ФИО.",
-            attachments=[InlineKeyboardBuilder().row(SEARCH_BUTTON).as_markup()],
+            attachments=[InlineKeyboardBuilder().as_markup()],
         )
         return
 
     search_results = InlineKeyboardBuilder()
     for term in matches:
         search_results.row(CallbackButton(text=term, payload=term))
-    search_results.row(SEARCH_BUTTON)
 
     await event.message.answer(
         text="Найдено:",
@@ -467,13 +459,6 @@ async def button_handler(event: MessageCallback):
         return
 
     button_pressed = str(event.callback.payload).strip()
-
-    if button_pressed == NAV_SEARCH:
-        await send_message(
-            text="🔍 **Режим поиска**\n\nОтправьте мне код группы или ФИО преподавателя текстом.",
-            attachments=[],
-        )
-        return
 
     if button_pressed.startswith("page:"):
         _, kind, str_idx, term = button_pressed.split(":", 3)
