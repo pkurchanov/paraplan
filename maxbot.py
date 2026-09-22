@@ -279,12 +279,8 @@ def make_content(workweek: Workweek, start_date: date) -> str:
 def make_navigation(kind: str, term: str, idx: int) -> InlineKeyboardBuilder:
     """Формирует клавиатуру для навигации"""
     return InlineKeyboardBuilder().row(
-        CallbackButton(
-            text="⬅️ Пред. неделя  ", payload=f"page:{kind}:{idx + 1}:{term}"
-        ),
-        CallbackButton(
-            text="След. неделя ➡️  ", payload=f"page:{kind}:{idx - 1}:{term}"
-        ),
+        CallbackButton(text="⬅️ Пред. неделя", payload=f"page:{kind}:{idx + 1}:{term}"),
+        CallbackButton(text="След. неделя ➡️", payload=f"page:{kind}:{idx - 1}:{term}"),
     )
 
 
