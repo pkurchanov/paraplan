@@ -270,7 +270,7 @@ def make_content(workweek: Workweek, start_date: date) -> str:
                     day_text += "\n".join(slot_lines) + "\n\n"
 
         if not day_text:
-            day_text += " > Нет занятий\n"
+            day_text += " > Нет занятий\n\n"
         message_text += day_text
 
     return message_text
